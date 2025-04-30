@@ -42,6 +42,7 @@ DJANGO_APPS = [
 ]
 
 THIRD_PARTY_APPS = [
+    'channels',
     'rest_framework',
     'corsheaders',
     'rest_framework_simplejwt',
@@ -89,7 +90,18 @@ TEMPLATES = [
 ]
 
 WSGI_APPLICATION = 'findam.wsgi.application'
+ASGI_APPLICATION = 'findam.asgi.application'
 
+CHANNEL_LAYERS = {
+    'default': {
+        'BACKEND': 'channels.layers.InMemoryChannelLayer',
+        # Pour la production, utilisez Redis :
+        # 'BACKEND': 'channels_redis.core.RedisChannelLayer',
+        # 'CONFIG': {
+        #     "hosts": [('127.0.0.1', 6379)],
+        # },
+    },
+}
 
 # Database
 # https://docs.djangoproject.com/en/4.2/ref/settings/#databases
@@ -214,6 +226,9 @@ CORS_ALLOWED_ORIGINS = env.list('CORS_ALLOWED_ORIGINS', default=[
     'http://127.0.0.1:3000',
     'http://127.0.0.1:8000',
 ])
+
+# Configurez également CORS pour les WebSockets
+CORS_ALLOW_CREDENTIALS = True
 
 # Sécurité supplémentaire
 SECURE_BROWSER_XSS_FILTER = True

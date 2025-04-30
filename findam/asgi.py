@@ -8,9 +8,30 @@ https://docs.djangoproject.com/en/5.2/howto/deployment/asgi/
 """
 
 import os
-
 from django.core.asgi import get_asgi_application
+from channels.routing import ProtocolTypeRouter, URLRouter
+from channels.auth import AuthMiddlewareStack
+from channels.security.websocket import AllowedHostsOriginValidator
+import communications.routing
+from communications.middleware import TokenAuthMiddleware
 
 os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'findam.settings')
 
-application = get_asgi_application()
+# Initialiser l'application Django ASGI
+django_asgi_app = get_asgi_application()
+
+application = ProtocolTypeRouter({
+    # Django gère les requêtes HTTP
+    "http": django_asgi_app,
+    
+    # WebSocket avec validation d'origine, authentification middleware et notre middleware JWT
+    "websocket": AllowedHostsOriginValidator(
+        TokenAuthMiddleware(
+            AuthMiddlewareStack(
+                URLRouter(
+                    communications.routing.websocket_urlpatterns
+                )
+            )
+        )
+    ),
+})

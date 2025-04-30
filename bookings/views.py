@@ -2,6 +2,8 @@
 # Vues pour la gestion des réservations
 
 from rest_framework import viewsets, permissions, status, filters
+from django.utils.translation import gettext as _
+
 from rest_framework.decorators import action
 from rest_framework.response import Response
 from django.db.models import Q
