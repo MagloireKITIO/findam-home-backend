@@ -1,34 +1,20 @@
 # findam/settings.py
-# Configuration principale du projet Django Findam
+# Configuration principale du projet Django Findam - Version simplifiée
 
 import os
 from pathlib import Path
 from datetime import timedelta
-import environ
-
-# Initialiser environ
-env = environ.Env(
-    # Par défaut, DEBUG est False
-    DEBUG=(bool, False),
-    ALLOWED_HOSTS=(list, []),
-)
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
 
-# Prendre le fichier .env à la racine du projet
-environ.Env.read_env(os.path.join(BASE_DIR, '.env'))
-
-# Quick-start development settings - unsuitable for production
-# See https://docs.djangoproject.com/en/4.2/howto/deployment/checklist/
-
 # SECURITY WARNING: keep the secret key used in production secret!
-SECRET_KEY = env('SECRET_KEY', default='django-insecure-temporary-key-for-dev')
+SECRET_KEY = 'django-insecure-temporary-key-for-dev'
 
 # SECURITY WARNING: don't run with debug turned on in production!
-DEBUG = env('DEBUG')
+DEBUG = True
 
-ALLOWED_HOSTS = env('ALLOWED_HOSTS')
+ALLOWED_HOSTS = ['localhost', '127.0.0.1']
 
 # Application definition
 
@@ -95,11 +81,6 @@ ASGI_APPLICATION = 'findam.asgi.application'
 CHANNEL_LAYERS = {
     'default': {
         'BACKEND': 'channels.layers.InMemoryChannelLayer',
-        # Pour la production, utilisez Redis :
-        # 'BACKEND': 'channels_redis.core.RedisChannelLayer',
-        # 'CONFIG': {
-        #     "hosts": [('127.0.0.1', 6379)],
-        # },
     },
 }
 
@@ -108,15 +89,22 @@ CHANNEL_LAYERS = {
 
 DATABASES = {
     'default': {
-        'ENGINE': env('DB_ENGINE', default='django.db.backends.sqlite3'),
-        'NAME': env('DB_NAME', default=os.path.join(BASE_DIR, 'db.sqlite3')),
-        'USER': env('DB_USER', default=''),
-        'PASSWORD': env('DB_PASSWORD', default=''),
-        'HOST': env('DB_HOST', default=''),
-        'PORT': env('DB_PORT', default=''),
+        'ENGINE': 'django.db.backends.sqlite3',
+        'NAME': os.path.join(BASE_DIR, 'db.sqlite3'),
     }
 }
 
+# Pour utiliser PostgreSQL, décommentez et configurez les lignes suivantes :
+# DATABASES = {
+#     'default': {
+#         'ENGINE': 'django.db.backends.postgresql',
+#         'NAME': 'findam',
+#         'USER': 'postgres',
+#         'PASSWORD': 'votre_mot_de_passe',
+#         'HOST': 'localhost',
+#         'PORT': '5432',
+#     }
+# }
 
 # Password validation
 # https://docs.djangoproject.com/en/4.2/ref/settings/#auth-password-validators
@@ -219,56 +207,52 @@ SIMPLE_JWT = {
 }
 
 # Configuration CORS
-CORS_ALLOW_ALL_ORIGINS = False  # Ne pas permettre à tous les domaines en production
-CORS_ALLOWED_ORIGINS = env.list('CORS_ALLOWED_ORIGINS', default=[
-    'http://localhost:3000',
-    'http://localhost:8000',
-    'http://127.0.0.1:3000',
-    'http://127.0.0.1:8000',
-])
+CORS_ALLOW_ALL_ORIGINS = True  # Permettre à tous les domaines en développement
+# Pour la production, utilisez plutôt:
+# CORS_ALLOW_ALL_ORIGINS = False
+# CORS_ALLOWED_ORIGINS = [
+#     'http://localhost:3000',
+#     'http://127.0.0.1:3000',
+#     'votre-domaine-production.com',
+# ]
 
 # Configurez également CORS pour les WebSockets
 CORS_ALLOW_CREDENTIALS = True
 
-# Sécurité supplémentaire
-SECURE_BROWSER_XSS_FILTER = True
-SECURE_CONTENT_TYPE_NOSNIFF = True
-X_FRAME_OPTIONS = 'DENY'
+# Sécurité supplémentaire (désactivées en développement)
+SECURE_BROWSER_XSS_FILTER = False
+SECURE_CONTENT_TYPE_NOSNIFF = False
+X_FRAME_OPTIONS = 'SAMEORIGIN'
 
-# Configurations des emails
-EMAIL_BACKEND = env('EMAIL_BACKEND', default='django.core.mail.backends.console.EmailBackend')
-EMAIL_HOST = env('EMAIL_HOST', default='')
-EMAIL_PORT = env('EMAIL_PORT', default=25)
-EMAIL_USE_TLS = env('EMAIL_USE_TLS', default=False)
-EMAIL_HOST_USER = env('EMAIL_HOST_USER', default='')
-EMAIL_HOST_PASSWORD = env('EMAIL_HOST_PASSWORD', default='')
-DEFAULT_FROM_EMAIL = env('DEFAULT_FROM_EMAIL', default='noreply@findam.com')
+# Configurations des emails (utilise la console en développement)
+EMAIL_BACKEND = 'django.core.mail.backends.console.EmailBackend'
+DEFAULT_FROM_EMAIL = 'noreply@findam.com'
+
+# Pour la configuration d'emails en production, décommentez et configurez:
+# EMAIL_BACKEND = 'django.core.mail.backends.smtp.EmailBackend'
+# EMAIL_HOST = 'smtp.gmail.com'  # Par exemple pour Gmail
+# EMAIL_PORT = 587
+# EMAIL_USE_TLS = True
+# EMAIL_HOST_USER = 'votre-email@gmail.com'
+# EMAIL_HOST_PASSWORD = 'votre-mot-de-passe'
+
+# Configuration NotchPay (pour les paiements)
+NOTCHPAY_PRIVATE_KEY = 'your-private-key'  # À remplacer en production
+NOTCHPAY_SANDBOX = True  # Définir sur False en production
 
 # Configuration de logging
 LOGGING = {
     'version': 1,
     'disable_existing_loggers': False,
-    'formatters': {
-        'verbose': {
-            'format': '{levelname} {asctime} {module} {process:d} {thread:d} {message}',
-            'style': '{',
-        },
-        'simple': {
-            'format': '{levelname} {message}',
-            'style': '{',
-        },
-    },
     'handlers': {
         'console': {
             'level': 'DEBUG',
             'class': 'logging.StreamHandler',
-            'formatter': 'simple',
         },
         'file': {
             'level': 'WARNING',
             'class': 'logging.FileHandler',
             'filename': os.path.join(BASE_DIR, 'logs/findam.log'),
-            'formatter': 'verbose',
         },
     },
     'loggers': {
