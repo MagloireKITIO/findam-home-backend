@@ -170,7 +170,7 @@ class PropertyViewSet(viewsets.ModelViewSet):
     @action(detail=True, methods=['post'])
     def publish(self, request, pk=None):
         """
-        Publie ou dépublie un logement.
+        Publie un logement.
         POST /api/v1/properties/{id}/publish/
         """
         property_obj = self.get_object()
@@ -189,12 +189,17 @@ class PropertyViewSet(viewsets.ModelViewSet):
                 status=status.HTTP_400_BAD_REQUEST
             )
         
-        # Inverser l'état de publication
+        # Définir comme publié
         property_obj.is_published = True
         property_obj.save(update_fields=['is_published'])
         
-        action = "publié" if property_obj.is_published else "dépublié"
-        return Response({"detail": f"Le logement a été {action} avec succès."})
+        # Retourner le logement mis à jour
+        serializer = PropertyDetailSerializer(property_obj, context={'request': request})
+        
+        return Response({
+            "detail": "Le logement a été publié avec succès.",
+            "property": serializer.data
+        })
     
     @action(detail=True, methods=['post'])
     def unpublish(self, request, pk=None):
@@ -214,7 +219,13 @@ class PropertyViewSet(viewsets.ModelViewSet):
         property_obj.is_published = False
         property_obj.save(update_fields=['is_published'])
         
-        return Response({"detail": "Le logement a été dépublié avec succès."})
+        # Retourner le logement mis à jour
+        serializer = PropertyDetailSerializer(property_obj, context={'request': request})
+        
+        return Response({
+            "detail": "Le logement a été dépublié avec succès.",
+            "property": serializer.data
+        })
     
     @action(detail=True, methods=['post'])
     def verify(self, request, pk=None):
