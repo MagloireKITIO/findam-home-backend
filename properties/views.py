@@ -85,9 +85,6 @@ class PropertyViewSet(viewsets.ModelViewSet):
     def get_queryset(self):
         """
         Retourne le queryset approprié selon le contexte.
-        - Pour les actions de liste ou de détail, précharge les relations.
-        - Pour les propriétaires, inclut leurs propres logements non publiés.
-        - Pour les autres, uniquement les logements publiés et vérifiés.
         """
         queryset = Property.objects.all()
         
@@ -108,17 +105,19 @@ class PropertyViewSet(viewsets.ModelViewSet):
         
         # Filtrer selon le contexte d'utilisateur
         user = self.request.user
+        is_owner_view = self.request.query_params.get('is_owner', 'false').lower() == 'true'
         
-        # Les propriétaires voient tous leurs logements
-        if user.is_authenticated and (user.is_owner or user.is_staff):
-            if not user.is_staff and self.action == 'list':
-                queryset = queryset.filter(owner=user)
-        # Les autres ne voient que les logements publiés et vérifiés
-        else:
-            queryset = queryset.filter(is_published=True, is_verified=True)
+        # Cas 1: Administrateur - voit tout
+        if user.is_authenticated and user.is_staff:
+            return queryset
         
-        return queryset
-    
+        # Cas 2: Propriétaire consultant ses propres logements
+        if user.is_authenticated and hasattr(user, 'is_owner') and user.is_owner and is_owner_view:
+            return queryset.filter(owner=user)
+        
+        # Cas 3: Tout autre utilisateur (authentifié ou non) - ne voit que les logements publiés ET vérifiés
+        return queryset.filter(is_published=True, is_verified=True)
+        
     def get_serializer_class(self):
         """
         Retourne la classe de sérialiseur appropriée selon l'action.

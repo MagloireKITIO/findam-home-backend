@@ -16,6 +16,10 @@ class PropertyFilter(django_filters.FilterSet):
     city = django_filters.NumberFilter(field_name="city__id")
     neighborhood = django_filters.NumberFilter(field_name="neighborhood__id")
     
+    # Filtres de visibilité
+    is_published = django_filters.BooleanFilter()
+    is_verified = django_filters.BooleanFilter()
+    
     # Filtres pour les capacités et configurations
     min_capacity = django_filters.NumberFilter(field_name="capacity", lookup_expr='gte')
     min_bedrooms = django_filters.NumberFilter(field_name="bedrooms", lookup_expr='gte')
@@ -41,7 +45,7 @@ class PropertyFilter(django_filters.FilterSet):
             'min_capacity', 'min_bedrooms', 'min_bathrooms',
             'property_type', 'amenities', 
             'available_start', 'available_end',
-            'allow_discount'
+            'allow_discount', 'is_published', 'is_verified'
         ]
     
     def filter_amenities(self, queryset, name, value):

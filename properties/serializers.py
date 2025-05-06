@@ -128,7 +128,8 @@ class PropertyListSerializer(serializers.ModelSerializer):
         fields = [
             'id', 'title', 'property_type', 'city_name', 'neighborhood_name',
             'price_per_night', 'capacity', 'bedrooms', 'bathrooms',
-            'main_image', 'owner_name', 'amenities_count', 'avg_rating', 'rating_count'
+            'main_image', 'owner_name', 'amenities_count', 'avg_rating', 'rating_count',
+            'is_published', 'is_verified'
         ]
     
     def get_main_image(self, obj):
