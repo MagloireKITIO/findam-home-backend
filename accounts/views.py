@@ -2,6 +2,7 @@
 # Vues pour la gestion des utilisateurs, profils et abonnements
 
 from rest_framework import generics, permissions, status, viewsets
+from rest_framework.parsers import MultiPartParser, FormParser
 from rest_framework.response import Response
 from rest_framework.views import APIView
 from rest_framework.decorators import action
@@ -92,6 +93,7 @@ class IdentityVerificationView(generics.UpdateAPIView):
     
     serializer_class = VerificationSerializer
     permission_classes = [permissions.IsAuthenticated]
+    parser_classes = [MultiPartParser, FormParser]  # Ajout des parsers
     
     def get_object(self):
         return self.request.user.profile
@@ -101,10 +103,6 @@ class IdentityVerificationView(generics.UpdateAPIView):
         serializer = self.get_serializer(profile, data=request.data, partial=True)
         
         if serializer.is_valid():
-            # Réinitialiser le statut de vérification si de nouveaux documents sont soumis
-            if 'id_card_image' in request.data or 'selfie_image' in request.data:
-                profile.verification_status = 'pending'
-            
             serializer.save()
             return Response({
                 "message": "Documents de vérification soumis avec succès. Votre demande sera traitée sous peu."

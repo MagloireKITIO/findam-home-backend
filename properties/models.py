@@ -92,8 +92,8 @@ class Property(models.Model):
     city = models.ForeignKey(City, on_delete=models.PROTECT, related_name='properties')
     neighborhood = models.ForeignKey(Neighborhood, on_delete=models.PROTECT, related_name='properties')
     address = models.CharField(_('adresse'), max_length=255)
-    latitude = models.DecimalField(_('latitude'), max_digits=9, decimal_places=6, null=True, blank=True)
-    longitude = models.DecimalField(_('longitude'), max_digits=9, decimal_places=6, null=True, blank=True)
+    latitude = models.DecimalField(_('latitude'), max_digits=20, decimal_places=9, null=True, blank=True)
+    longitude = models.DecimalField(_('longitude'), max_digits=20, decimal_places=9, null=True, blank=True)
     
     # Tarifs
     price_per_night = models.DecimalField(_('prix par nuit'), max_digits=10, decimal_places=2)

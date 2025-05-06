@@ -42,7 +42,7 @@ class PropertyImageSerializer(serializers.ModelSerializer):
     
     class Meta:
         model = PropertyImage
-        fields = ['id', 'image', 'is_main', 'order', 'caption', 'created_at']
+        fields = ['id', 'property', 'image', 'is_main', 'order', 'caption', 'created_at']
         read_only_fields = ['created_at']
         
     def create(self, validated_data):

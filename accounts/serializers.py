@@ -1,7 +1,8 @@
 # accounts/serializers.py
 # Sérialiseurs pour les modèles utilisateur et profil
 
-from datetime import timezone
+from django.utils import timezone
+
 from rest_framework import serializers
 from django.contrib.auth import get_user_model
 from django.contrib.auth.password_validation import validate_password
@@ -85,6 +86,20 @@ class VerificationSerializer(serializers.ModelSerializer):
     class Meta:
         model = Profile
         fields = ['id_card_number', 'id_card_image', 'selfie_image']
+        
+    def update(self, instance, validated_data):
+        """Mise à jour du profil avec les données de vérification."""
+        if 'id_card_number' in validated_data:
+            instance.id_card_number = validated_data['id_card_number']
+        if 'id_card_image' in validated_data:
+            instance.id_card_image = validated_data['id_card_image']
+        if 'selfie_image' in validated_data:
+            instance.selfie_image = validated_data['selfie_image']
+        
+        # Réinitialiser le statut de vérification
+        instance.verification_status = 'pending'
+        instance.save()
+        return instance
 
 class OwnerSubscriptionSerializer(serializers.ModelSerializer):
     """Sérialiseur pour les abonnements des propriétaires."""
