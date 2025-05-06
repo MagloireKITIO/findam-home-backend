@@ -141,6 +141,7 @@ class PropertyViewSet(viewsets.ModelViewSet):
         elif self.action in ['my_properties']:
             permission_classes = [permissions.IsAuthenticated]
         else:
+            # IMPORTANT: Actions list et retrieve sont publiques
             permission_classes = [permissions.AllowAny]
         
         return [permission() for permission in permission_classes]
@@ -189,11 +190,31 @@ class PropertyViewSet(viewsets.ModelViewSet):
             )
         
         # Inverser l'état de publication
-        property_obj.is_published = not property_obj.is_published
+        property_obj.is_published = True
         property_obj.save(update_fields=['is_published'])
         
         action = "publié" if property_obj.is_published else "dépublié"
         return Response({"detail": f"Le logement a été {action} avec succès."})
+    
+    @action(detail=True, methods=['post'])
+    def unpublish(self, request, pk=None):
+        """
+        Dépublie un logement.
+        POST /api/v1/properties/{id}/unpublish/
+        """
+        property_obj = self.get_object()
+        
+        # Vérifier que l'utilisateur est le propriétaire
+        if property_obj.owner != request.user and not request.user.is_staff:
+            return Response(
+                {"detail": "Vous n'êtes pas autorisé à effectuer cette action."},
+                status=status.HTTP_403_FORBIDDEN
+            )
+        
+        property_obj.is_published = False
+        property_obj.save(update_fields=['is_published'])
+        
+        return Response({"detail": "Le logement a été dépublié avec succès."})
     
     @action(detail=True, methods=['post'])
     def verify(self, request, pk=None):
