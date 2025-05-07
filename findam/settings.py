@@ -237,8 +237,18 @@ DEFAULT_FROM_EMAIL = 'noreply@findam.com'
 # EMAIL_HOST_PASSWORD = 'votre-mot-de-passe'
 
 # Configuration NotchPay (pour les paiements)
-NOTCHPAY_PRIVATE_KEY = 'your-private-key'  # À remplacer en production
+NOTCHPAY_PUBLIC_KEY = 'pk_test.hlN4xPJaXIjZOGJLYtNrr65J1eJ0lNu0X9QLYtcPbRf03ox9cgt5nCOBdBuafwsgUjWsmgb8zTcFPVXiEWKHeR2A6l3xdGZIpVBy7xKREnUhnAC6u9M2YLRaGOhUA'
+NOTCHPAY_PRIVATE_KEY = 'sk_test.iL0dqwKw4ssMOAArlzFDBkARtijZBD5pXU8SHJ1jd6jaTpqIfjP7tiEoaTBbzbmbKp1Kne154FdDtjD2HXIN9sDq7ksmQQ6EeUHPO93pYj5Cu3eql9JqzJISaBo1z'
+NOTCHPAY_HASH_KEY = 'hsk_test.NThcqZtbkPucsO63CdIwyyvix5U9I4BVShvDdbLkLxa58Kd3rl7ifoN17Cx8Dklj2umRE2WtM2HTo6lWFILUzNj9OoF3RIy5LIvapbVHYuvGuQxjK5ID52yh83Itt'
+
 NOTCHPAY_SANDBOX = True  # Définir sur False en production
+
+# URL base pour les callbacks de paiement
+PAYMENT_CALLBACK_BASE_URL = 'https://votre-domaine.com'  # Domaine pour les callbacks de production
+
+# En développement, utilisez ngrok ou un service similaire pour recevoir les webhooks
+if DEBUG:
+    PAYMENT_CALLBACK_BASE_URL = 'http://localhost:8000'  # Remplacer par votre URL ngrok en développement
 
 # Configuration de logging
 LOGGING = {

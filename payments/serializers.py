@@ -8,7 +8,9 @@ from .models import PaymentMethod, Transaction, Payout, Commission
 from accounts.serializers import UserSerializer
 from bookings.serializers import BookingListSerializer
 from bookings.models import Booking
+from .utils import NotchPayUtils
 
+# Conserver les sérialiseurs existants
 class PaymentMethodSerializer(serializers.ModelSerializer):
     """Sérialiseur pour les méthodes de paiement."""
     
@@ -199,3 +201,51 @@ class PayoutCreateSerializer(serializers.Serializer):
             payout.bookings.set(bookings_objs)
         
         return payout
+
+# Ajout des nouveaux sérialiseurs pour NotchPay
+
+class NotchPayPaymentInitSerializer(serializers.Serializer):
+    """
+    Sérialiseur pour l'initialisation d'un paiement NotchPay
+    """
+    payment_method = serializers.CharField(default='mobile_money')
+    mobile_operator = serializers.CharField(required=False, default='mobile_money')
+    phone_number = serializers.CharField(required=False)
+    
+    def validate_mobile_operator(self, value):
+        """Valide l'opérateur mobile"""
+        valid_operators = ['orange', 'mtn', 'mobile_money']
+        if value not in valid_operators:
+            raise serializers.ValidationError(f"Opérateur mobile non valide. Options: {', '.join(valid_operators)}")
+        return value
+    
+    def validate_payment_method(self, value):
+        """Valide la méthode de paiement"""
+        valid_methods = ['mobile_money', 'credit_card', 'bank_transfer']
+        if value not in valid_methods:
+            raise serializers.ValidationError(f"Méthode de paiement non valide. Options: {', '.join(valid_methods)}")
+        return value
+    
+    def validate(self, data):
+        """Validation globale des données"""
+        payment_method = data.get('payment_method')
+        
+        # Si la méthode est mobile_money, le numéro de téléphone est requis
+        if payment_method == 'mobile_money' and not data.get('phone_number'):
+            raise serializers.ValidationError({'phone_number': "Le numéro de téléphone est requis pour le paiement par Mobile Money."})
+            
+        return data
+
+class NotchPayCallbackSerializer(serializers.Serializer):
+    """
+    Sérialiseur pour valider les données de callback NotchPay
+    """
+    event = serializers.CharField()
+    data = serializers.DictField()
+    
+    def validate_event(self, value):
+        """Valide le type d'événement"""
+        valid_events = ['payment.success', 'payment.failed', 'payment.pending', 'payment.processing']
+        if value not in valid_events:
+            raise serializers.ValidationError(f"Type d'événement non valide: {value}")
+        return value
