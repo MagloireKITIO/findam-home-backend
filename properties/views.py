@@ -30,8 +30,11 @@ from .serializers import (
     PropertyAvailabilityCheckSerializer,
     ExternalBookingSerializer
 )
+from .middleware import SubscriptionLimitValidator
 from .permissions import IsOwnerOrReadOnly, IsOwnerOfProperty, IsVerifiedOwner
 from .filters import PropertyFilter
+from decimal import Decimal
+
 
 class AmenityViewSet(viewsets.ReadOnlyModelViewSet):
     """
@@ -147,8 +150,13 @@ class PropertyViewSet(viewsets.ModelViewSet):
     
     def perform_create(self, serializer):
         """
-        Associe automatiquement le propriétaire à la création d'un logement.
+        Associe automatiquement le propriétaire à la création d'un logement
+        et vérifie les limites d'abonnement.
         """
+        # Vérifier les limites d'abonnement avant de créer le logement
+        SubscriptionLimitValidator.validate_property_creation(self.request.user)
+        
+        # Créer le logement si la validation passe
         serializer.save(owner=self.request.user)
     
     @action(detail=False, methods=['get'])
@@ -252,7 +260,7 @@ class PropertyViewSet(viewsets.ModelViewSet):
     def check_availability(self, request, pk=None):
         """
         Vérifie la disponibilité d'un logement pour des dates données.
-        GET /api/v1/properties/{id}/check-availability/?start_date=YYYY-MM-DD&end_date=YYYY-MM-DD
+        GET /api/v1/properties/{id}/check_availability/?start_date=YYYY-MM-DD&end_date=YYYY-MM-DD
         """
         property_obj = self.get_object()
         
@@ -279,6 +287,16 @@ class PropertyViewSet(viewsets.ModelViewSet):
         if property_obj.cleaning_fee:
             total_price += property_obj.cleaning_fee
         
+        # Calculer les frais de service (7%)
+        # CORRECTION: Utiliser Decimal au lieu de float pour éviter l'erreur de type
+        service_fee = total_price * Decimal('0.07')
+        
+        # Récupérer toutes les indisponibilités futures (pas seulement pour la période demandée)
+        today = timezone.now().date()
+        all_unavailabilities = property_obj.unavailabilities.filter(
+            end_date__gte=today
+        ).values('start_date', 'end_date', 'booking_type')
+        
         return Response({
             "available": is_available,
             "property_id": property_obj.id,
@@ -288,10 +306,12 @@ class PropertyViewSet(viewsets.ModelViewSet):
             "base_price": total_price,
             "cleaning_fee": property_obj.cleaning_fee,
             "security_deposit": property_obj.security_deposit,
-            "total_price": total_price + property_obj.security_deposit,
-            "unavailable_dates": list(unavailabilities.values('start_date', 'end_date', 'booking_type')) if unavailabilities.exists() else []
+            "service_fee": service_fee,
+            "total_price": total_price + property_obj.security_deposit + service_fee,
+            "unavailable_dates": list(unavailabilities.values('start_date', 'end_date', 'booking_type')),
+            "all_unavailable_dates": list(all_unavailabilities)
         })
-    
+        
     @action(detail=True, methods=['post'])
     def add_external_booking(self, request, pk=None):
         """

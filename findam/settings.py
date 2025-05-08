@@ -250,6 +250,13 @@ PAYMENT_CALLBACK_BASE_URL = 'https://votre-domaine.com'  # Domaine pour les call
 if DEBUG:
     PAYMENT_CALLBACK_BASE_URL = 'http://localhost:8000'  # Remplacer par votre URL ngrok en développement
 
+# URL du frontend pour les redirections
+FRONTEND_URL = 'http://localhost:3000'  # URL du frontend en développement
+
+# En production, on utiliserait le même domaine que l'API
+if not DEBUG:
+    FRONTEND_URL = 'https://votre-domaine.com'  # À adapter en production
+
 # Configuration de logging
 LOGGING = {
     'version': 1,

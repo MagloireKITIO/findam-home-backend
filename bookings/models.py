@@ -153,16 +153,25 @@ class Booking(models.Model):
             discount_rate = self.promo_code.discount_percentage / 100
             self.discount_amount = self.base_price * discount_rate
         
+        # Assurons-nous que les valeurs sont des objets Decimal pour éviter les erreurs de type
+        from decimal import Decimal
+        
+        # Convertir en Decimal si ce n'est pas déjà le cas
+        base_price = Decimal(str(self.base_price)) if not isinstance(self.base_price, Decimal) else self.base_price
+        discount_amount = Decimal(str(self.discount_amount)) if not isinstance(self.discount_amount, Decimal) else self.discount_amount
+        cleaning_fee = Decimal(str(self.cleaning_fee)) if not isinstance(self.cleaning_fee, Decimal) else self.cleaning_fee
+        security_deposit = Decimal(str(self.security_deposit)) if not isinstance(self.security_deposit, Decimal) else self.security_deposit
+        
         # Calculer les frais de service (7% pour le locataire)
-        self.service_fee = (self.base_price - self.discount_amount) * 0.07
+        self.service_fee = (base_price - discount_amount) * Decimal('0.07')
         
         # Calculer le total
         self.total_price = (
-            self.base_price + 
-            self.cleaning_fee + 
-            self.security_deposit + 
+            base_price + 
+            cleaning_fee + 
+            security_deposit + 
             self.service_fee - 
-            self.discount_amount
+            discount_amount
         )
         
         return self.total_price

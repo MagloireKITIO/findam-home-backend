@@ -31,7 +31,7 @@ class NotchPayService:
         }
     
     def initialize_payment(self, amount, currency="XAF", description=None, customer_info=None, 
-                          metadata=None, callback_url=None, reference=None):
+                         metadata=None, callback_url=None, reference=None, success_url=None, cancel_url=None):
         """
         Initialiser un paiement avec NotchPay
         
@@ -43,6 +43,8 @@ class NotchPayService:
             metadata (dict): Données supplémentaires à stocker avec le paiement
             callback_url (str): URL de callback pour les notifications
             reference (str): Référence unique pour ce paiement (générée si non fournie)
+            success_url (str): URL de redirection en cas de paiement réussi
+            cancel_url (str): URL de redirection en cas d'annulation du paiement
             
         Returns:
             dict: Réponse de l'API NotchPay contenant l'URL de redirection pour le paiement
@@ -76,6 +78,13 @@ class NotchPayService:
         if callback_url:
             payload["callback"] = callback_url
         
+        # Ajouter les URLs de redirection (IMPORTANT - Nouveaux paramètres)
+        if success_url:
+            payload["success_url"] = success_url
+        
+        if cancel_url:
+            payload["cancel_url"] = cancel_url
+        
         # Envoyer la requête à NotchPay
         logger.info(f"Tentative d'initialisation de paiement NotchPay")
         logger.info(f"URL: {self.base_url}/payments")
@@ -85,9 +94,9 @@ class NotchPayService:
         try:
             logger.info(f"Initialisation de paiement NotchPay pour {amount} {currency}")
             response = requests.post(
-                f"{self.base_url}/payments",
-                json=payload,
-                headers=self.headers
+            f"{self.base_url}/payments",
+            json=payload,
+            headers=self.headers
             )
             
             # Log de la réponse complète

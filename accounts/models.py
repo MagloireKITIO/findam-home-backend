@@ -204,6 +204,22 @@ class OwnerSubscription(models.Model):
             return self.start_date + timezone.timedelta(days=365)
         return None
     
+    def calculate_price(self):
+        """
+        Calcule le prix de l'abonnement en fonction du type.
+        
+        Returns:
+            float: Prix de l'abonnement en FCFA
+        """
+        subscription_prices = {
+            'free': 0,
+            'monthly': 5000,
+            'quarterly': 12000,
+            'yearly': 40000
+        }
+    
+        return subscription_prices.get(self.subscription_type, 0)
+    
     def save(self, *args, **kwargs):
         """Surcharge de la méthode save pour calculer automatiquement la date de fin."""
         if not self.end_date and self.subscription_type != 'free':

@@ -79,7 +79,7 @@ def handle_payment_success(data):
     logger.info(f"Traitement du paiement réussi: {notchpay_reference}, type: {transaction_type}")
     
     if transaction_type == 'booking':
-        # Mettre à jour la réservation et créer la transaction financière
+        # Traitement des réservations (code existant)
         try:
             booking = Booking.objects.get(id=object_id)
             
@@ -121,34 +121,71 @@ def handle_payment_success(data):
     elif transaction_type == 'subscription':
         # Mettre à jour l'abonnement et créer la transaction financière
         try:
-            subscription = OwnerSubscription.objects.get(id=object_id)
+            # IMPORTANT: Utilisons get_or_none pour éviter les erreurs si l'abonnement n'existe pas
+            from accounts.models import OwnerSubscription
             
-            # Mettre à jour le statut de l'abonnement
-            subscription.status = 'active'
-            # Calculer la date de fin si ce n'est pas déjà fait
-            if not subscription.end_date and subscription.subscription_type != 'free':
-                subscription.end_date = subscription.calculate_end_date()
+            # Recherche par ID ET référence de paiement
+            subscription = None
+            
+            # D'abord, essayer de trouver par ID
+            if object_id:
+                try:
+                    subscription = OwnerSubscription.objects.get(id=object_id)
+                except OwnerSubscription.DoesNotExist:
+                    logger.warning(f"Abonnement non trouvé avec ID {object_id}, recherche par référence...")
+            
+            # Si non trouvé par ID, essayer par référence de paiement
+            if not subscription and notchpay_reference:
+                subscription = OwnerSubscription.objects.filter(
+                    payment_reference=notchpay_reference
+                ).first()
+            
+            # Si toujours pas trouvé, essayer par référence marchande
+            if not subscription and external_reference:
+                subscription = OwnerSubscription.objects.filter(
+                    payment_reference=external_reference
+                ).first()
+            
+            if not subscription:
+                logger.error(f"Impossible de trouver l'abonnement pour l'ID {object_id} ou la référence {notchpay_reference}")
+                return
+            
+            # Vérifier l'état actuel avant de modifier
+            current_status = subscription.status
+            logger.info(f"État actuel de l'abonnement {subscription.id}: {current_status}")
+            
+            # IMPORTANT: Activer l'abonnement seulement s'il n'est pas déjà actif
+            if subscription.status != 'active':
+                # Mettre à jour le statut de l'abonnement
+                subscription.status = 'active'
                 
-            subscription.save(update_fields=['status', 'end_date'])
+                # Calculer la date de fin si ce n'est pas déjà fait
+                if not subscription.end_date and subscription.subscription_type != 'free':
+                    subscription.end_date = subscription.calculate_end_date()
+                    
+                subscription.save(update_fields=['status', 'end_date'])
+                logger.info(f"Abonnement {subscription.id} activé suite au paiement réussi (notchpay_reference: {notchpay_reference})")
+                
+                # Créer ou mettre à jour la transaction financière
+                transaction, created = Transaction.objects.update_or_create(
+                    external_reference=notchpay_reference,
+                    transaction_type='subscription',
+                    defaults={
+                        'user': subscription.owner,
+                        'status': 'completed',
+                        'amount': subscription.calculate_price() if hasattr(subscription, 'calculate_price') else 0,
+                        'currency': 'XAF',
+                        'description': f"Paiement de l'abonnement {subscription.get_subscription_type_display()}",
+                        'processed_at': timezone.now()
+                    }
+                )
+                
+                logger.info(f"Transaction financière créée/mise à jour pour l'abonnement {subscription.id}: {transaction.id}")
+            else:
+                logger.info(f"L'abonnement {subscription.id} est déjà actif, aucune action nécessaire")
             
-            # Créer ou mettre à jour la transaction financière
-            transaction, created = Transaction.objects.update_or_create(
-                external_reference=notchpay_reference,
-                transaction_type='subscription',
-                defaults={
-                    'user': subscription.owner,
-                    'status': 'completed',
-                    'amount': subscription.calculate_price() if hasattr(subscription, 'calculate_price') else 0,
-                    'currency': 'XAF',
-                    'description': f"Paiement de l'abonnement {subscription.get_subscription_type_display()}",
-                    'processed_at': subscription.updated_at
-                }
-            )
-            
-            logger.info(f"Abonnement {subscription.id} activé, transaction {transaction.id} créée/mise à jour")
-            
-        except OwnerSubscription.DoesNotExist:
-            logger.error(f"Abonnement introuvable pour la référence {object_id}")
+        except Exception as e:
+            logger.exception(f"Erreur lors du traitement de l'abonnement {object_id}: {str(e)}")
     
     else:
         logger.warning(f"Type de transaction non reconnu: {transaction_type}")

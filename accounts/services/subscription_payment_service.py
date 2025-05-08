@@ -59,6 +59,11 @@ class SubscriptionPaymentService:
             'subscription_type': subscription.subscription_type
         }
         
+        # URLs de redirection (IMPORTANT: ajout des URLs de retour)
+        callback_url = f"{settings.PAYMENT_CALLBACK_BASE_URL}/api/v1/payments/webhook/notchpay/"
+        success_url = f"{settings.FRONTEND_URL}/owner/subscription/success?id={subscription.id}"
+        cancel_url = f"{settings.FRONTEND_URL}/owner/subscription/cancel?id={subscription.id}"
+        
         # Description du paiement
         description = f"Abonnement {subscription.get_subscription_type_display()} - Findam"
         
@@ -70,7 +75,6 @@ class SubscriptionPaymentService:
             payment_reference = f"sub-{subscription.id}-{uuid.uuid4().hex[:8]}"
             
             # Calcul du montant selon le type d'abonnement
-            # Utilisons la méthode calculate_price si elle existe, ou une logique par défaut
             if hasattr(subscription, 'calculate_price') and callable(getattr(subscription, 'calculate_price')):
                 amount = subscription.calculate_price()
             else:
@@ -90,7 +94,10 @@ class SubscriptionPaymentService:
                 description=description,
                 customer_info=customer_info,
                 metadata=metadata,
-                reference=payment_reference
+                reference=payment_reference,
+                callback_url=callback_url,  # URL de callback pour les notifications
+                success_url=success_url,    # URL de redirection en cas de succès
+                cancel_url=cancel_url       # URL de redirection en cas d'annulation
             )
             
             # Vérifier le résultat
