@@ -244,7 +244,20 @@ class BookingCreateSerializer(serializers.ModelSerializer):
         if promo_code:
             promo_code.mark_as_used()
         
+        # IMPORTANT : Retourner la réservation créée avec son ID
         return booking
+
+    class Meta:
+        model = Booking
+        fields = [
+            'id',  # Assurez-vous que l'ID est inclus ici
+            'property', 
+            'check_in_date', 
+            'check_out_date', 
+            'guests_count', 
+            'special_requests', 
+            'promo_code_value'
+        ]
 
 class BookingListSerializer(serializers.ModelSerializer):
     """Sérialiseur pour la liste des réservations (version allégée)."""

@@ -78,7 +78,7 @@ class NotchPayService:
         if callback_url:
             payload["callback"] = callback_url
         
-        # Ajouter les URLs de redirection (IMPORTANT - Nouveaux paramètres)
+        # Ajouter les URLs de redirection
         if success_url:
             payload["success_url"] = success_url
         
@@ -168,6 +168,8 @@ class NotchPayService:
             if hasattr(e, 'response') and e.response:
                 logger.error(f"Détails: {e.response.text}")
             raise
+
+    
     
     def verify_payment(self, payment_reference):
         """
@@ -175,28 +177,105 @@ class NotchPayService:
         
         Args:
             payment_reference (str): Référence du paiement à vérifier
-            
+                
         Returns:
             dict: Informations sur le statut du paiement
         """
         try:
             logger.info(f"Vérification du statut du paiement {payment_reference}")
-            response = requests.get(
-                f"{self.base_url}/payments/{payment_reference}",
-                headers=self.headers
-            )
             
-            response.raise_for_status()
-            payment_data = response.json()
+            # 1. D'abord, rechercher dans la base de données par transaction_id exact
+            from bookings.models import PaymentTransaction
+            transaction = PaymentTransaction.objects.filter(transaction_id=payment_reference).first()
             
-            logger.info(f"Statut du paiement {payment_reference}: {payment_data.get('transaction', {}).get('status')}")
-            return payment_data
+            notchpay_ref = None
+            if transaction and transaction.payment_response:
+                # Extraire la référence NotchPay de payment_response
+                if isinstance(transaction.payment_response, dict) and 'transaction' in transaction.payment_response:
+                    notchpay_ref = transaction.payment_response['transaction'].get('reference')
             
-        except requests.exceptions.RequestException as e:
-            logger.error(f"Erreur lors de la vérification du paiement {payment_reference}: {str(e)}")
-            if hasattr(e, 'response') and e.response:
-                logger.error(f"Détails: {e.response.text}")
-            raise
+            # 2. Si aucune référence trouvée et c'est une référence booking-xxx
+            if not notchpay_ref and payment_reference.startswith('booking-'):
+                # Remplacer TOUS les types d'espaces et nettoyer la chaîne
+                clean_reference = payment_reference.replace('\xa0', '').replace(' ', '').strip()
+                parts = clean_reference.split('-')
+                
+                # Extraire l'ID de réservation
+                if len(parts) >= 5:
+                    booking_id = f"{parts[1]}-{parts[2]}-{parts[3]}-{parts[4]}"
+                    
+                    # Chercher dans la base de données avec cet ID
+                    from bookings.models import Booking
+                    try:
+                        booking = Booking.objects.get(id=booking_id)
+                        # Trouver la transaction associée
+                        tx = booking.transactions.order_by('-created_at').first()
+                        if tx and tx.payment_response:
+                            if isinstance(tx.payment_response, dict) and 'transaction' in tx.payment_response:
+                                notchpay_ref = tx.payment_response['transaction'].get('reference')
+                    except Exception as e:
+                        logger.warning(f"Erreur lors de la recherche avec l'ID nettoyé: {str(e)}")
+            
+            # 3. Chercher directement dans la base de données toutes les transactions récentes
+            if not notchpay_ref:
+                recent_txs = PaymentTransaction.objects.filter(
+                    status__in=['pending', 'processing']
+                ).order_by('-created_at')[:10]
+                
+                for tx in recent_txs:
+                    if tx.payment_response and isinstance(tx.payment_response, dict) and 'transaction' in tx.payment_response:
+                        ref = tx.payment_response['transaction'].get('reference')
+                        if ref and ref.startswith('trx.'):
+                            notchpay_ref = ref
+                            logger.info(f"Référence NotchPay trouvée dans les transactions récentes: {notchpay_ref}")
+                            break
+            
+            # 4. Si on a trouvé une référence valide, faire la requête à NotchPay
+            if notchpay_ref:
+                logger.info(f"Utilisation de la référence NotchPay: {notchpay_ref}")
+                response = requests.get(
+                    f"{self.base_url}/payments/{notchpay_ref}",
+                    headers=self.headers
+                )
+                
+                response.raise_for_status()
+                payment_data = response.json()
+                
+                # Si le statut est "complete", mettre à jour la transaction et la réservation
+                status = payment_data.get('transaction', {}).get('status')
+                logger.info(f"Statut du paiement {notchpay_ref}: {status}")
+                
+                if status == 'complete' or status == 'successful':
+                    # Mettre à jour la transaction originale et la réservation
+                    if transaction:
+                        transaction.status = 'completed'
+                        transaction.save(update_fields=['status'])
+                        
+                        # Mettre à jour la réservation associée
+                        if transaction.booking:
+                            transaction.booking.payment_status = 'paid'
+                            transaction.booking.save(update_fields=['payment_status'])
+                            logger.info(f"Réservation {transaction.booking.id} marquée comme payée")
+                
+                return payment_data
+            
+            # 5. Si aucune référence NotchPay valide n'a été trouvée, retourner un statut par défaut
+            logger.warning(f"Aucune référence NotchPay valide trouvée pour {payment_reference}")
+            return {
+                "transaction": {
+                    "reference": payment_reference,
+                    "status": "pending"
+                }
+            }
+            
+        except Exception as e:
+            logger.error(f"Erreur dans verify_payment: {str(e)}")
+            return {
+                "transaction": {
+                    "reference": payment_reference,
+                    "status": "pending"
+                }
+            }
     
     def verify_webhook_signature(self, payload, signature_header):
         """
@@ -209,12 +288,12 @@ class NotchPayService:
         Returns:
             bool: True si la signature est valide, False sinon
         """
-        if not signature_header or not self.private_key:
+        if not signature_header or not settings.NOTCHPAY_HASH_KEY:
             return False
         
         # Calculer la signature locale
         computed_signature = hmac.new(
-            self.private_key.encode('utf-8'),
+            settings.NOTCHPAY_HASH_KEY.encode('utf-8'),
             payload.encode('utf-8'),
             hashlib.sha256
         ).hexdigest()

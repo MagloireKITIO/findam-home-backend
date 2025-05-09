@@ -14,7 +14,7 @@ SECRET_KEY = 'django-insecure-temporary-key-for-dev'
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = True
 
-ALLOWED_HOSTS = ['localhost', '127.0.0.1']
+ALLOWED_HOSTS = ['*']
 
 # Application definition
 
@@ -244,11 +244,11 @@ NOTCHPAY_HASH_KEY = 'hsk_test.NThcqZtbkPucsO63CdIwyyvix5U9I4BVShvDdbLkLxa58Kd3rl
 NOTCHPAY_SANDBOX = True  # Définir sur False en production
 
 # URL base pour les callbacks de paiement
-PAYMENT_CALLBACK_BASE_URL = 'https://votre-domaine.com'  # Domaine pour les callbacks de production
+PAYMENT_CALLBACK_BASE_URL = 'https://da42-102-244-223-43.ngrok-free.app'  # Domaine pour les callbacks de production
 
 # En développement, utilisez ngrok ou un service similaire pour recevoir les webhooks
 if DEBUG:
-    PAYMENT_CALLBACK_BASE_URL = 'http://localhost:8000'  # Remplacer par votre URL ngrok en développement
+    PAYMENT_CALLBACK_BASE_URL = 'https://da42-102-244-223-43.ngrok-free.app'  # Remplacer par votre URL ngrok en développement
 
 # URL du frontend pour les redirections
 FRONTEND_URL = 'http://localhost:3000'  # URL du frontend en développement

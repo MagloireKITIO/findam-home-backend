@@ -84,6 +84,17 @@ class BookingViewSet(viewsets.ModelViewSet):
         
         return [permission() for permission in permission_classes]
     
+    def create(self, request, *args, **kwargs):
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        booking = serializer.save()
+        
+        # Utiliser BookingDetailSerializer pour la réponse
+        return Response(
+            BookingDetailSerializer(booking, context=self.get_serializer_context()).data,
+            status=status.HTTP_201_CREATED
+        )
+    
     @action(detail=True, methods=['post'])
     def cancel(self, request, pk=None):
         """
@@ -185,11 +196,9 @@ class BookingViewSet(viewsets.ModelViewSet):
         Initie le paiement d'une réservation.
         POST /api/v1/bookings/{id}/initiate_payment/
         """
-        import requests
-        import json
-        from django.conf import settings
         from payments.services.notchpay_service import NotchPayService
         from payments.utils import NotchPayUtils
+        from django.conf import settings
         
         booking = self.get_object()
         
@@ -247,6 +256,11 @@ class BookingViewSet(viewsets.ModelViewSet):
         # Préparation de la description
         description = f"Réservation {booking.id} - {booking.property.title} du {booking.check_in_date} au {booking.check_out_date}"
         
+        # URLs de redirection
+        callback_url = f"{settings.PAYMENT_CALLBACK_BASE_URL}/api/v1/payments/webhook/notchpay/"
+        success_url = f"{settings.FRONTEND_URL}/bookings/{booking.id}?payment_status=success"
+        cancel_url = f"{settings.FRONTEND_URL}/bookings/{booking.id}?payment_status=cancel"
+        
         try:
             # Initialiser le service NotchPay
             notchpay_service = NotchPayService()
@@ -263,13 +277,20 @@ class BookingViewSet(viewsets.ModelViewSet):
                 description=description,
                 customer_info=customer_info,
                 metadata=metadata,
-                reference=payment_reference
+                reference=payment_reference,
+                callback_url=callback_url,
+                success_url=success_url,
+                cancel_url=cancel_url
             )
             
             # Mettre à jour la transaction avec les informations de NotchPay
             if payment_result and 'transaction' in payment_result:
                 transaction.payment_response = payment_result
-                transaction.external_reference = payment_result['transaction'].get('reference', '')
+    
+                # Stocker la référence NotchPay dans la transaction
+                notchpay_reference = payment_result['transaction'].get('reference', '')
+                transaction.payment_details = {"notchpay_reference": notchpay_reference}
+                
                 transaction.status = 'processing'
                 transaction.save()
                 
@@ -277,7 +298,7 @@ class BookingViewSet(viewsets.ModelViewSet):
                 return Response({
                     "payment_url": payment_result.get('authorization_url', ''),
                     "transaction_id": str(transaction.id),
-                    "notchpay_reference": payment_result['transaction'].get('reference', '')
+                    "notchpay_reference": notchpay_reference
                 })
             else:
                 transaction.status = 'failed'
@@ -297,6 +318,105 @@ class BookingViewSet(viewsets.ModelViewSet):
             return Response({
                 "detail": _("Une erreur est survenue lors de l'initialisation du paiement."),
                 "error": str(e)
+            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+    @action(detail=True, methods=['get'])
+    def check_payment_status(self, request, pk=None):
+        """
+        Vérifie le statut d'un paiement.
+        GET /api/v1/bookings/{id}/check_payment_status/
+        """
+        from payments.services.notchpay_service import NotchPayService
+        from payments.utils import NotchPayUtils, PaymentStatus
+        import logging
+        
+        logger = logging.getLogger('findam')
+        
+        try:
+            booking = self.get_object()
+            logger.info(f"Vérification du statut de paiement pour la réservation {booking.id}")
+            
+            # Récupérer la dernière transaction
+            transaction = booking.transactions.order_by('-created_at').first()
+            
+            if not transaction:
+                logger.warning(f"Aucune transaction trouvée pour la réservation {booking.id}")
+                return Response({
+                    "status": "pending",
+                    "booking_status": booking.status,
+                    "payment_status": booking.payment_status,
+                    "message": "Aucune transaction trouvée pour cette réservation."
+                })
+            
+            # Si la transaction est déjà terminée ou a échoué, retourner son statut
+            if transaction.status in ['completed', 'failed']:
+                return Response({
+                    "status": transaction.status,
+                    "booking_status": booking.status,
+                    "payment_status": booking.payment_status
+                })
+            
+            # Récupérer la référence NotchPay
+            notchpay_reference = transaction.transaction_id
+            logger.info(f"Vérification du statut du paiement {notchpay_reference}")
+            
+            if not notchpay_reference:
+                # Si pas de référence, retourner le statut en cours
+                return Response({
+                    "status": "processing",
+                    "booking_status": booking.status,
+                    "payment_status": booking.payment_status,
+                    "message": "Transaction en cours de traitement, aucune référence disponible."
+                })
+            
+            try:
+                # Initialiser le service NotchPay
+                notchpay_service = NotchPayService()
+                
+                # Vérifier le statut du paiement
+                payment_data = notchpay_service.verify_payment(notchpay_reference)
+                
+                # Récupérer le statut NotchPay
+                notchpay_status = payment_data.get('transaction', {}).get('status', 'pending')
+                
+                # Convertir le statut NotchPay en statut interne
+                internal_status = NotchPayUtils.convert_notchpay_status(notchpay_status)
+                
+                # Mettre à jour le statut de la transaction
+                transaction.status = internal_status
+                transaction.payment_response = payment_data
+                transaction.save(update_fields=['status', 'payment_response'])
+                
+                # Si le paiement est confirmé ou échoué, mettre à jour le statut de la réservation
+                if internal_status == PaymentStatus.COMPLETED:
+                    booking.payment_status = 'paid'
+                    booking.save(update_fields=['payment_status'])
+                elif internal_status == PaymentStatus.FAILED:
+                    booking.payment_status = 'failed'
+                    booking.save(update_fields=['payment_status'])
+                
+                return Response({
+                    "status": internal_status,
+                    "booking_status": booking.status,
+                    "payment_status": booking.payment_status,
+                    "details": payment_data.get('transaction', {})
+                })
+                
+            except Exception as e:
+                logger.exception(f"Erreur lors de la vérification du paiement: {str(e)}")
+                return Response({
+                    "status": "error",
+                    "error": str(e),
+                    "booking_status": booking.status,
+                    "payment_status": booking.payment_status
+                }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+                
+        except Exception as e:
+            logger.exception(f"Erreur globale lors de la vérification du statut: {str(e)}")
+            return Response({
+                "status": "error",
+                "error": "Une erreur interne est survenue lors de la vérification du statut du paiement.",
+                "details": str(e)
             }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
     
     @action(detail=False, methods=['post'])
@@ -425,84 +545,6 @@ class BookingViewSet(viewsets.ModelViewSet):
                 "error": str(e)
             }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
     
-    @action(detail=True, methods=['get'])
-    def check_payment_status(self, request, pk=None):
-        """
-        Vérifie le statut d'un paiement.
-        GET /api/v1/bookings/{id}/check_payment_status/
-        """
-        from payments.services.notchpay_service import NotchPayService
-        from payments.utils import NotchPayUtils, PaymentStatus
-        
-        booking = self.get_object()
-        
-        # Récupérer la dernière transaction
-        transaction = booking.transactions.order_by('-created_at').first()
-        
-        if not transaction:
-            return Response({
-                "detail": _("Aucune transaction trouvée pour cette réservation.")
-            }, status=status.HTTP_404_NOT_FOUND)
-        
-        # Si la transaction est déjà terminée ou a échoué, retourner son statut
-        if transaction.status in ['completed', 'failed']:
-            return Response({
-                "status": transaction.status,
-                "booking_status": booking.status,
-                "payment_status": booking.payment_status
-            })
-        
-        # Si la transaction est en cours, vérifier son statut auprès de NotchPay
-        try:
-            notchpay_service = NotchPayService()
-            
-            # Vérifier si nous avons une référence NotchPay valide
-            notchpay_reference = transaction.external_reference
-            
-            if not notchpay_reference:
-                # Si pas de référence, retourner le statut en cours
-                return Response({
-                    "status": "processing",
-                    "booking_status": booking.status,
-                    "payment_status": booking.payment_status,
-                    "message": "Transaction en cours de traitement, aucune référence externe disponible."
-                })
-            
-            # Vérifier le statut auprès de NotchPay
-            payment_data = notchpay_service.verify_payment(notchpay_reference)
-            
-            # Récupérer le statut NotchPay
-            notchpay_status = payment_data.get('transaction', {}).get('status', 'pending')
-            
-            # Convertir le statut NotchPay en statut interne
-            internal_status = NotchPayUtils.convert_notchpay_status(notchpay_status)
-            
-            # Mettre à jour le statut de la transaction
-            transaction.status = internal_status
-            transaction.payment_response = payment_data
-            transaction.save(update_fields=['status', 'payment_response'])
-            
-            # Si le paiement est confirmé, mettre à jour le statut de la réservation
-            if internal_status == PaymentStatus.COMPLETED:
-                booking.payment_status = 'paid'
-                booking.save(update_fields=['payment_status'])
-            elif internal_status == PaymentStatus.FAILED:
-                booking.payment_status = 'failed'
-                booking.save(update_fields=['payment_status'])
-            
-            return Response({
-                "status": internal_status,
-                "booking_status": booking.status,
-                "payment_status": booking.payment_status,
-                "details": payment_data.get('transaction', {})
-            })
-                    
-        except Exception as e:
-            return Response({
-                "detail": _("Une erreur est survenue lors de la vérification du statut du paiement."),
-                "error": str(e)
-            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
-
 class PromoCodeViewSet(viewsets.ModelViewSet):
     """
     ViewSet pour gérer les codes promotionnels.
