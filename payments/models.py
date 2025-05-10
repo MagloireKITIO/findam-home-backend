@@ -149,9 +149,12 @@ class Payout(models.Model):
     """
     STATUS_CHOICES = (
         ('pending', _('En attente')),
+        ('scheduled', _('Programmé')),  # Nouveau statut pour les versements programmés
+        ('ready', _('Prêt à verser')),  # Nouveau statut pour les versements prêts à être traités
         ('processing', _('En cours de traitement')),
         ('completed', _('Terminé')),
         ('failed', _('Échoué')),
+        ('cancelled', _('Annulé')),  # Nouveau statut pour les versements annulés
     )
     
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
@@ -177,6 +180,17 @@ class Payout(models.Model):
     # Informations supplémentaires
     period_start = models.DateField(_('début de la période'), null=True, blank=True)
     period_end = models.DateField(_('fin de la période'), null=True, blank=True)
+    
+    # Nouveaux champs pour l'anti-escrow
+    scheduled_at = models.DateTimeField(_('date programmée'), null=True, blank=True)
+    processed_by = models.ForeignKey(
+        User, 
+        on_delete=models.SET_NULL, 
+        null=True, 
+        blank=True, 
+        related_name='processed_payouts'
+    )
+    escrow_reason = models.CharField(_('raison de séquestre'), max_length=100, blank=True)
     
     # Notes
     notes = models.TextField(_('notes'), blank=True)
@@ -215,6 +229,79 @@ class Payout(models.Model):
             )
             self.transaction = transaction
             self.save(update_fields=['transaction'])
+    
+    def mark_as_ready(self):
+        """Marque le versement comme prêt à verser."""
+        self.status = 'ready'
+        self.save(update_fields=['status'])
+    
+    def schedule(self, scheduled_date):
+        """Programme le versement pour une date future."""
+        self.status = 'scheduled'
+        self.scheduled_at = scheduled_date
+        self.save(update_fields=['status', 'scheduled_at'])
+    
+    def cancel(self, cancelled_by=None, reason=None):
+        """Annule le versement."""
+        self.status = 'cancelled'
+        self.processed_by = cancelled_by
+        if reason:
+            self.escrow_reason = reason
+        self.save(update_fields=['status', 'processed_by', 'escrow_reason'])
+        
+        # Si une transaction existe, la marquer comme annulée également
+        if self.transaction:
+            self.transaction.status = 'cancelled'
+            self.transaction.save(update_fields=['status'])
+    
+    # Méthode statique pour créer un versement programmé pour une réservation
+    @classmethod
+    def schedule_for_booking(cls, booking, scheduled_date=None, **kwargs):
+        """
+        Crée un versement programmé pour une réservation.
+        
+        Args:
+            booking (Booking): La réservation pour laquelle programmer un versement
+            scheduled_date (datetime): Date et heure prévues pour le versement
+            
+        Returns:
+            Payout: L'objet versement programmé
+        """
+        # Si aucune date n'est fournie, programmer 24h après le check-in
+        if not scheduled_date:
+            check_in_datetime = timezone.make_aware(
+                timezone.datetime.combine(booking.check_in_date, timezone.datetime.min.time())
+            )
+            scheduled_date = check_in_datetime + timezone.timedelta(hours=24)
+        
+        # Calculer le montant (prix de la réservation - commission du propriétaire)
+        from .models import Commission
+        
+        # Obtenir ou calculer la commission
+        commission = Commission.objects.filter(booking=booking).first()
+        if not commission:
+            commission = Commission.calculate_for_booking(booking)
+        
+        # Montant à verser = prix total - commission propriétaire
+        payout_amount = booking.total_price - commission.owner_amount
+        
+        # Créer le versement
+        payout = cls.objects.create(
+            owner=booking.property.owner,
+            amount=payout_amount,
+            currency='XAF',  # Devise par défaut
+            status='scheduled',
+            scheduled_at=scheduled_date,
+            period_start=booking.check_in_date,
+            period_end=booking.check_out_date,
+            notes=f"Versement automatique pour la réservation {booking.id}",
+            **kwargs
+        )
+        
+        # Ajouter la réservation au versement
+        payout.bookings.add(booking)
+        
+        return payout
 
 class Commission(models.Model):
     """
@@ -258,9 +345,12 @@ class Commission(models.Model):
         Calcule et crée la commission pour une réservation.
         Retourne l'objet Commission créé ou mis à jour.
         """
+        # Importer Decimal si ce n'est pas déjà fait
+        from decimal import Decimal
+        
         # Calculer la commission du propriétaire (% du prix de base)
         base_price = booking.base_price
-        owner_rate = 3.0  # Taux par défaut pour le propriétaire
+        owner_rate = Decimal('3.0')  # Taux par défaut pour le propriétaire
         
         # Vérifier si le propriétaire a un abonnement pour ajuster le taux
         owner = booking.property.owner
@@ -271,17 +361,17 @@ class Commission(models.Model):
         
         if active_subscription:
             if active_subscription.subscription_type == 'monthly':
-                owner_rate = 2.0
+                owner_rate = Decimal('2.0')
             elif active_subscription.subscription_type == 'quarterly':
-                owner_rate = 1.5
+                owner_rate = Decimal('1.5')
             elif active_subscription.subscription_type == 'yearly':
-                owner_rate = 1.0
+                owner_rate = Decimal('1.0')
         
-        owner_amount = (base_price * owner_rate) / 100
+        owner_amount = (base_price * owner_rate) / Decimal('100')
         
         # La commission du locataire est déjà incluse dans le service_fee
         tenant_amount = booking.service_fee
-        tenant_rate = 7.0
+        tenant_rate = Decimal('7.0')
         
         # Créer ou mettre à jour la commission
         commission, created = cls.objects.update_or_create(

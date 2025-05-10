@@ -32,14 +32,15 @@ THIRD_PARTY_APPS = [
     'rest_framework',
     'corsheaders',
     'rest_framework_simplejwt',
+    'django_crontab',
 ]
 
 LOCAL_APPS = [
     'accounts',
     'properties',
-    'bookings',
+    'bookings.apps.BookingsConfig',
     'communications',
-    'payments',
+    'payments.apps.PaymentsConfig',
     'reviews',
     'common',
 ]
@@ -256,6 +257,14 @@ FRONTEND_URL = 'http://localhost:3000'  # URL du frontend en développement
 # En production, on utiliserait le même domaine que l'API
 if not DEBUG:
     FRONTEND_URL = 'https://votre-domaine.com'  # À adapter en production
+
+# Configuration des tâches planifiées
+CRONJOBS = [
+    ('0 */4 * * *', 'payments.tasks.schedule_payouts_for_new_bookings'),  # Toutes les 4 heures
+    ('0 */2 * * *', 'payments.tasks.process_scheduled_payouts'),          # Toutes les 2 heures
+    ('0 */3 * * *', 'payments.tasks.process_ready_payouts'),              # Toutes les 3 heures
+    ('0 12 * * *', 'payments.tasks.check_pending_checkins'),              # Tous les jours à midi
+]
 
 # Configuration de logging
 LOGGING = {

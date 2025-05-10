@@ -8,6 +8,7 @@ from django.db.models import Q, Sum
 from django.utils import timezone
 from django_filters.rest_framework import DjangoFilterBackend
 from accounts.permissions import IsOwnerOfProfile, IsAdminUser
+from bookings.models import Booking
 from .models import PaymentMethod, Transaction, Payout, Commission
 from .serializers import (
     PaymentMethodSerializer,
@@ -16,6 +17,8 @@ from .serializers import (
     CommissionSerializer,
     PayoutCreateSerializer
 )
+from django.utils.translation import gettext as _
+
 
 class PaymentMethodViewSet(viewsets.ModelViewSet):
     """
@@ -352,6 +355,308 @@ class PayoutViewSet(viewsets.ModelViewSet):
         
         serializer = PayoutSerializer(pending_payouts, many=True, context={'request': request})
         return Response(serializer.data)
+    
+    @action(detail=True, methods=['post'])
+    def schedule(self, request, pk=None):
+        """
+        Programme un versement pour une date future.
+        POST /api/v1/payments/payouts/{id}/schedule/
+        """
+        payout = self.get_object()
+        
+        # Vérifier les permissions
+        if payout.owner != request.user and not request.user.is_staff:
+            return Response({
+                "detail": _("Vous n'êtes pas autorisé à programmer ce versement.")
+            }, status=status.HTTP_403_FORBIDDEN)
+        
+        # Vérifier que le versement est en attente ou annulé
+        if payout.status not in ['pending', 'cancelled']:
+            return Response({
+                "detail": _("Seuls les versements en attente ou annulés peuvent être programmés.")
+            }, status=status.HTTP_400_BAD_REQUEST)
+        
+        # Récupérer la date programmée
+        scheduled_date = request.data.get('scheduled_date')
+        if not scheduled_date:
+            return Response({
+                "detail": _("Date de programmation requise.")
+            }, status=status.HTTP_400_BAD_REQUEST)
+        
+        try:
+            # Convertir la date string en objet datetime
+            scheduled_date = timezone.datetime.fromisoformat(scheduled_date.replace('Z', '+00:00'))
+            
+            # Vérifier que la date est future
+            if scheduled_date <= timezone.now():
+                return Response({
+                    "detail": _("La date de programmation doit être future.")
+                }, status=status.HTTP_400_BAD_REQUEST)
+            
+            # Programmer le versement
+            payout.schedule(scheduled_date)
+            
+            # Ajouter une note pour suivre l'action
+            payout.admin_notes += f"\nVersement programmé pour le {scheduled_date.strftime('%Y-%m-%d %H:%M')} par {request.user.email}"
+            payout.save(update_fields=['admin_notes'])
+            
+            return Response({
+                "detail": _("Versement programmé avec succès."),
+                "scheduled_date": scheduled_date.isoformat()
+            })
+            
+        except (ValueError, TypeError):
+            return Response({
+                "detail": _("Format de date invalide. Utilisez ISO 8601 (e.g. 2023-04-25T14:30:00Z).")
+            }, status=status.HTTP_400_BAD_REQUEST)
+        except Exception as e:
+            return Response({
+                "detail": str(e)
+            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+    @action(detail=True, methods=['post'])
+    def cancel_schedule(self, request, pk=None):
+        """
+        Annule la programmation d'un versement.
+        POST /api/v1/payments/payouts/{id}/cancel_schedule/
+        """
+        payout = self.get_object()
+        
+        # Vérifier les permissions
+        if not request.user.is_staff:
+            return Response({
+                "detail": _("Seuls les administrateurs peuvent annuler la programmation d'un versement.")
+            }, status=status.HTTP_403_FORBIDDEN)
+        
+        # Vérifier que le versement est programmé ou prêt
+        if payout.status not in ['scheduled', 'ready']:
+            return Response({
+                "detail": _("Seuls les versements programmés ou prêts peuvent être annulés.")
+            }, status=status.HTTP_400_BAD_REQUEST)
+        
+        # Récupérer la raison
+        reason = request.data.get('reason', '')
+        
+        # Annuler le versement
+        payout.cancel(cancelled_by=request.user, reason=reason)
+        
+        return Response({
+            "detail": _("Programmation du versement annulée avec succès.")
+        })
+
+    @action(detail=True, methods=['post'])
+    def mark_ready(self, request, pk=None):
+        """
+        Marque un versement programmé comme prêt à être traité.
+        POST /api/v1/payments/payouts/{id}/mark_ready/
+        """
+        payout = self.get_object()
+        
+        # Vérifier les permissions
+        if not request.user.is_staff:
+            return Response({
+                "detail": _("Seuls les administrateurs peuvent marquer un versement comme prêt.")
+            }, status=status.HTTP_403_FORBIDDEN)
+        
+        # Vérifier que le versement est programmé
+        if payout.status != 'scheduled':
+            return Response({
+                "detail": _("Seuls les versements programmés peuvent être marqués comme prêts.")
+            }, status=status.HTTP_400_BAD_REQUEST)
+        
+        # Marquer comme prêt
+        payout.mark_as_ready()
+        
+        # Ajouter une note pour suivre l'action
+        payout.admin_notes += f"\nVersement marqué comme prêt par {request.user.email} le {timezone.now().strftime('%Y-%m-%d %H:%M')}"
+        payout.save(update_fields=['admin_notes'])
+        
+        return Response({
+            "detail": _("Versement marqué comme prêt à être traité.")
+        })
+
+    @action(detail=False, methods=['get'])
+    def scheduled(self, request):
+        """
+        Liste tous les versements programmés.
+        GET /api/v1/payments/payouts/scheduled/
+        """
+        # Vérifier les permissions
+        if not request.user.is_staff:
+            return Response({
+                "detail": _("Seuls les administrateurs peuvent voir tous les versements programmés.")
+            }, status=status.HTTP_403_FORBIDDEN)
+        
+        # Récupérer les versements programmés
+        scheduled_payouts = Payout.objects.filter(status='scheduled').select_related(
+            'owner', 'payment_method'
+        ).prefetch_related('bookings')
+        
+        # Filtrer par date programmée si spécifiée
+        from_date = request.query_params.get('from_date')
+        to_date = request.query_params.get('to_date')
+        
+        if from_date:
+            try:
+                from_datetime = timezone.datetime.fromisoformat(from_date.replace('Z', '+00:00'))
+                scheduled_payouts = scheduled_payouts.filter(scheduled_at__gte=from_datetime)
+            except (ValueError, TypeError):
+                pass
+        
+        if to_date:
+            try:
+                to_datetime = timezone.datetime.fromisoformat(to_date.replace('Z', '+00:00'))
+                scheduled_payouts = scheduled_payouts.filter(scheduled_at__lte=to_datetime)
+            except (ValueError, TypeError):
+                pass
+        
+        # Sérialiser et retourner les résultats
+        paginator = self.paginator
+        page = paginator.paginate_queryset(scheduled_payouts, request)
+        
+        if page is not None:
+            serializer = self.get_serializer(page, many=True)
+            return paginator.get_paginated_response(serializer.data)
+        
+        serializer = self.get_serializer(scheduled_payouts, many=True)
+        return Response(serializer.data)
+
+    @action(detail=False, methods=['get'])
+    def ready(self, request):
+        """
+        Liste tous les versements prêts à être traités.
+        GET /api/v1/payments/payouts/ready/
+        """
+        # Vérifier les permissions
+        if not request.user.is_staff:
+            return Response({
+                "detail": _("Seuls les administrateurs peuvent voir tous les versements prêts.")
+            }, status=status.HTTP_403_FORBIDDEN)
+        
+        # Récupérer les versements prêts
+        ready_payouts = Payout.objects.filter(status='ready').select_related(
+            'owner', 'payment_method'
+        ).prefetch_related('bookings')
+        
+        # Sérialiser et retourner les résultats
+        paginator = self.paginator
+        page = paginator.paginate_queryset(ready_payouts, request)
+        
+        if page is not None:
+            serializer = self.get_serializer(page, many=True)
+            return paginator.get_paginated_response(serializer.data)
+        
+        serializer = self.get_serializer(ready_payouts, many=True)
+        return Response(serializer.data)
+
+    @action(detail=False, methods=['post'])
+    def process_scheduled(self, request):
+        """
+        Traite tous les versements programmés qui sont maintenant dus.
+        POST /api/v1/payments/payouts/process_scheduled/
+        """
+        # Vérifier les permissions
+        if not request.user.is_staff:
+            return Response({
+                "detail": _("Seuls les administrateurs peuvent traiter les versements programmés.")
+            }, status=status.HTTP_403_FORBIDDEN)
+        
+        # Appeler la tâche de traitement
+        from .tasks import process_scheduled_payouts
+        count = process_scheduled_payouts()
+        
+        return Response({
+            "detail": _("Traitement des versements programmés terminé."),
+            "count": count
+        })
+
+    @action(detail=False, methods=['post'])
+    def process_ready(self, request):
+        """
+        Traite tous les versements prêts à être versés.
+        POST /api/v1/payments/payouts/process_ready/
+        """
+        # Vérifier les permissions
+        if not request.user.is_staff:
+            return Response({
+                "detail": _("Seuls les administrateurs peuvent traiter les versements prêts.")
+            }, status=status.HTTP_403_FORBIDDEN)
+        
+        # Appeler la tâche de traitement
+        from .tasks import process_ready_payouts
+        result = process_ready_payouts()
+        
+        return Response({
+            "detail": _("Traitement des versements prêts terminé."),
+            "success": result.get('success', 0),
+            "failed": result.get('failed', 0),
+            "total": result.get('total', 0)
+        })
+
+    @action(detail=False, methods=['post'])
+    def schedule_for_booking(self, request):
+        """
+        Programme un versement pour une réservation spécifique.
+        POST /api/v1/payments/payouts/schedule_for_booking/
+        """
+        # Vérifier les permissions
+        if not request.user.is_staff:
+            return Response({
+                "detail": _("Seuls les administrateurs peuvent programmer un versement pour une réservation.")
+            }, status=status.HTTP_403_FORBIDDEN)
+        
+        # Récupérer l'ID de la réservation
+        booking_id = request.data.get('booking_id')
+        if not booking_id:
+            return Response({
+                "detail": _("ID de réservation requis.")
+            }, status=status.HTTP_400_BAD_REQUEST)
+        
+        # Récupérer la date programmée
+        scheduled_date = request.data.get('scheduled_date')
+        
+        try:
+            # Récupérer la réservation
+            booking = Booking.objects.get(id=booking_id)
+            
+            # Vérifier que la réservation est confirmée et payée
+            if booking.status != 'confirmed' or booking.payment_status != 'paid':
+                return Response({
+                    "detail": _("La réservation doit être confirmée et payée pour programmer un versement.")
+                }, status=status.HTTP_400_BAD_REQUEST)
+            
+            # Convertir la date programmée si fournie
+            scheduled_datetime = None
+            if scheduled_date:
+                scheduled_datetime = timezone.datetime.fromisoformat(scheduled_date.replace('Z', '+00:00'))
+            
+            # Programmer le versement
+            from .services.payout_service import PayoutService
+            payout = PayoutService.schedule_payout_for_booking(booking, scheduled_date=scheduled_datetime)
+            
+            if not payout:
+                return Response({
+                    "detail": _("Impossible de programmer le versement pour cette réservation.")
+                }, status=status.HTTP_400_BAD_REQUEST)
+            
+            return Response({
+                "detail": _("Versement programmé avec succès."),
+                "payout_id": payout.id,
+                "scheduled_date": payout.scheduled_at.isoformat() if payout.scheduled_at else None
+            })
+            
+        except Booking.DoesNotExist:
+            return Response({
+                "detail": _("Réservation introuvable.")
+            }, status=status.HTTP_404_NOT_FOUND)
+        except (ValueError, TypeError):
+            return Response({
+                "detail": _("Format de date invalide. Utilisez ISO 8601 (e.g. 2023-04-25T14:30:00Z).")
+            }, status=status.HTTP_400_BAD_REQUEST)
+        except Exception as e:
+            return Response({
+                "detail": str(e)
+            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 class CommissionViewSet(viewsets.ReadOnlyModelViewSet):
     """

@@ -1,6 +1,9 @@
 # payments/admin.py
 # Configuration de l'interface d'administration pour l'application payments
 
+from datetime import timezone
+from gettext import ngettext
+from pyexpat.errors import messages
 from django.contrib import admin
 from django.utils.translation import gettext_lazy as _
 from django.utils.html import format_html
@@ -125,16 +128,21 @@ class TransactionAdmin(admin.ModelAdmin):
 
 @admin.register(Payout)
 class PayoutAdmin(admin.ModelAdmin):
-    """Configuration de l'admin pour le modèle Payout."""
-    list_display = ('id', 'owner_email', 'amount', 'currency', 'status_display', 'created_at', 'processed_at')
-    list_filter = ('status', 'currency', 'created_at', 'processed_at')
-    search_fields = ('owner__email', 'notes', 'admin_notes', 'external_reference')
+    """Configuration de l'admin pour le modèle Payout avec gestion d'anti-escrow."""
+    list_display = ('id', 'owner_email', 'amount', 'currency', 'status_display', 'scheduled_at_display', 'created_at', 'processed_at')
+    list_filter = ('status', 'currency', 'created_at', 'processed_at', 'scheduled_at')
+    search_fields = ('owner__email', 'notes', 'admin_notes', 'external_reference', 'escrow_reason')
     readonly_fields = ['created_at', 'updated_at', 'processed_at']
     filter_horizontal = ('bookings',)
+    actions = ['mark_as_ready', 'process_payouts', 'cancel_payouts']
     
     fieldsets = (
         (_('Informations de base'), {
             'fields': ('owner', 'amount', 'currency', 'payment_method', 'status')
+        }),
+        (_('Programmation anti-escrow'), {
+            'fields': ('scheduled_at', 'processed_by', 'escrow_reason'),
+            'classes': ('wide',),
         }),
         (_('Références'), {
             'fields': ('transaction', 'external_reference')
@@ -146,7 +154,8 @@ class PayoutAdmin(admin.ModelAdmin):
             'fields': ('notes', 'admin_notes')
         }),
         (_('Métadonnées'), {
-            'fields': ('created_at', 'updated_at', 'processed_at')
+            'fields': ('created_at', 'updated_at', 'processed_at'),
+            'classes': ('collapse',),
         }),
     )
     
@@ -157,21 +166,168 @@ class PayoutAdmin(admin.ModelAdmin):
         return obj.owner.email
     
     def status_display(self, obj):
-        """Affiche le statut du versement."""
-        return obj.get_status_display()
+        """Affiche le statut du versement avec code couleur."""
+        status_colors = {
+            'pending': 'gray',
+            'scheduled': 'blue',
+            'ready': 'green',
+            'processing': 'orange',
+            'completed': 'green',
+            'failed': 'red',
+            'cancelled': 'red',
+        }
+        color = status_colors.get(obj.status, 'gray')
+        return format_html(
+            '<span style="color:white; background-color:{}; padding:3px 10px; border-radius:10px;">{}</span>',
+            color, obj.get_status_display()
+        )
+    
+    def scheduled_at_display(self, obj):
+        """Affiche la date programmée avec formatage."""
+        if not obj.scheduled_at:
+            return '-'
+        
+        # Vérifier si la date est passée ou future
+        now = timezone.now()
+        if obj.scheduled_at < now:
+            return format_html(
+                '<span style="color: #777;">{} <small>(passée)</small></span>',
+                obj.scheduled_at.strftime('%d/%m/%Y %H:%M')
+            )
+        else:
+            # Calculer le délai
+            delta = obj.scheduled_at - now
+            days = delta.days
+            hours = delta.seconds // 3600
+            
+            if days > 0:
+                delay_text = f"Dans {days}j {hours}h"
+            else:
+                delay_text = f"Dans {hours}h"
+            
+            return format_html(
+                '<span>{} <small style="color: #28a745;">({}))</small></span>',
+                obj.scheduled_at.strftime('%d/%m/%Y %H:%M'), delay_text
+            )
     
     owner_email.short_description = _('Propriétaire')
     status_display.short_description = _('Statut')
+    scheduled_at_display.short_description = _('Date programmée')
+    
+    def mark_as_ready(self, request, queryset):
+        """Action pour marquer les versements sélectionnés comme prêts à être traités."""
+        updated = 0
+        for payout in queryset.filter(status='scheduled'):
+            payout.status = 'ready'
+            payout.admin_notes += f"\nMarqué comme prêt par {request.user.email} le {timezone.now().strftime('%Y-%m-%d %H:%M')}"
+            payout.save(update_fields=['status', 'admin_notes'])
+            updated += 1
+        
+        self.message_user(
+            request,
+            ngettext(
+                '%d versement a été marqué comme prêt à être traité.',
+                '%d versements ont été marqués comme prêts à être traités.',
+                updated
+            ) % updated,
+            messages.SUCCESS if updated > 0 else messages.WARNING
+        )
+    
+    def process_payouts(self, request, queryset):
+        """Action pour traiter immédiatement les versements sélectionnés."""
+        from payments.services.payout_service import PayoutService
+        
+        # Marquer d'abord tous les versements programmés comme prêts
+        for payout in queryset.filter(status='scheduled'):
+            payout.status = 'ready'
+            payout.admin_notes += f"\nMarqué comme prêt par {request.user.email} le {timezone.now().strftime('%Y-%m-%d %H:%M')}"
+            payout.save(update_fields=['status', 'admin_notes'])
+        
+        # Ensuite, traiter tous les versements prêts
+        ready_payouts = [p.id for p in queryset.filter(status='ready')]
+        
+        if ready_payouts:
+            # Exécuter le traitement de façon asynchrone pour éviter de bloquer l'admin
+            from django.core.management import call_command
+            # Lancer la commande dans un processus séparé
+            import threading
+            thread = threading.Thread(
+                target=lambda: call_command('process_payouts', payout_ids=','.join([str(pid) for pid in ready_payouts]))
+            )
+            thread.start()
+            
+            self.message_user(
+                request,
+                ngettext(
+                    'Traitement du versement lancé en arrière-plan.',
+                    'Traitement de %d versements lancé en arrière-plan.',
+                    len(ready_payouts)
+                ) % len(ready_payouts),
+                messages.SUCCESS
+            )
+        else:
+            self.message_user(
+                request,
+                _('Aucun versement prêt à être traité parmi les sélectionnés.'),
+                messages.WARNING
+            )
+    
+    def cancel_payouts(self, request, queryset):
+        """Action pour annuler les versements sélectionnés."""
+        updated = 0
+        for payout in queryset.filter(status__in=['pending', 'scheduled', 'ready']):
+            payout.status = 'cancelled'
+            payout.processed_by = request.user
+            payout.admin_notes += f"\nAnnulé par {request.user.email} le {timezone.now().strftime('%Y-%m-%d %H:%M')}"
+            payout.save(update_fields=['status', 'processed_by', 'admin_notes'])
+            updated += 1
+        
+        self.message_user(
+            request,
+            ngettext(
+                '%d versement a été annulé.',
+                '%d versements ont été annulés.',
+                updated
+            ) % updated,
+            messages.SUCCESS if updated > 0 else messages.WARNING
+        )
+    
+    def get_queryset(self, request):
+        """Optimise les requêtes avec les jointures nécessaires."""
+        queryset = super().get_queryset(request)
+        return queryset.select_related('owner', 'payment_method', 'processed_by')
     
     def save_model(self, request, obj, form, change):
         """
-        Surcharge pour gérer l'action de complétion d'un versement.
-        Si le statut passe à 'completed', marquer comme terminé.
+        Surcharge pour gérer les actions spéciales lors de la sauvegarde.
         """
-        if change and 'status' in form.changed_data and obj.status == 'completed':
-            obj.mark_as_completed()
-        else:
-            super().save_model(request, obj, form, change)
+        if change and 'status' in form.changed_data:
+            # Si on change le statut manuellement
+            old_status = Payout.objects.get(pk=obj.pk).status if obj.pk else None
+            new_status = obj.status
+            
+            # Si le statut passe à 'completed'
+            if new_status == 'completed' and old_status != 'completed':
+                obj.processed_at = timezone.now()
+                if not obj.processed_by:
+                    obj.processed_by = request.user
+            
+            # Si le statut passe à 'ready' depuis 'scheduled'
+            if old_status == 'scheduled' and new_status == 'ready':
+                if not obj.admin_notes:
+                    obj.admin_notes = ""
+                obj.admin_notes += f"\nMarqué comme prêt par {request.user.email} le {timezone.now().strftime('%Y-%m-%d %H:%M')}"
+            
+            # Si le statut passe à 'cancelled'
+            if new_status == 'cancelled':
+                if not obj.processed_by:
+                    obj.processed_by = request.user
+        
+        super().save_model(request, obj, form, change)
+    
+    mark_as_ready.short_description = _("Marquer comme prêts à verser")
+    process_payouts.short_description = _("Traiter les versements immédiatement")
+    cancel_payouts.short_description = _("Annuler les versements sélectionnés")
 
 @admin.register(Commission)
 class CommissionAdmin(admin.ModelAdmin):

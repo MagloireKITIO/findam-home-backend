@@ -77,6 +77,8 @@ class PayoutSerializer(serializers.ModelSerializer):
     status_display = serializers.CharField(source='get_status_display', read_only=True)
     bookings_details = BookingListSerializer(source='bookings', many=True, read_only=True)
     payment_method_details = PaymentMethodSerializer(source='payment_method', read_only=True)
+    processed_by_details = UserSerializer(source='processed_by', read_only=True)
+    days_until_scheduled = serializers.SerializerMethodField()
     
     class Meta:
         model = Payout
@@ -84,9 +86,53 @@ class PayoutSerializer(serializers.ModelSerializer):
             'id', 'owner', 'owner_details', 'amount', 'currency', 'payment_method',
             'payment_method_details', 'status', 'status_display', 'transaction',
             'external_reference', 'bookings', 'bookings_details', 'period_start', 'period_end',
-            'notes', 'admin_notes', 'created_at', 'updated_at', 'processed_at'
+            'scheduled_at', 'processed_by', 'processed_by_details', 'escrow_reason', 
+            'days_until_scheduled', 'notes', 'admin_notes', 'created_at', 'updated_at', 'processed_at'
         ]
         read_only_fields = ['id', 'created_at', 'updated_at', 'processed_at']
+    
+    def get_days_until_scheduled(self, obj):
+        """Calcule le nombre de jours jusqu'à la date programmée."""
+        if obj.scheduled_at and obj.status == 'scheduled':
+            now = timezone.now()
+            if obj.scheduled_at > now:
+                delta = obj.scheduled_at - now
+                return delta.days + (delta.seconds / 86400)  # Jours + secondes convertis en fraction de jour
+        return None
+
+# Ajouter un nouveau sérialiseur pour la planification des versements
+class PayoutScheduleSerializer(serializers.Serializer):
+    """
+    Sérialiseur pour programmer un versement.
+    """
+    scheduled_date = serializers.DateTimeField(required=True)
+    
+    def validate_scheduled_date(self, value):
+        """Valide que la date programmée est future."""
+        if value <= timezone.now():
+            raise serializers.ValidationError(_("La date programmée doit être future."))
+        return value
+    
+# Ajouter un nouveau sérialiseur pour l'annulation de la planification
+class PayoutCancelScheduleSerializer(serializers.Serializer):
+    """
+    Sérialiseur pour annuler la programmation d'un versement.
+    """
+    reason = serializers.CharField(required=False, allow_blank=True)
+
+# Ajouter un nouveau sérialiseur pour programmer un versement pour une réservation
+class BookingPayoutScheduleSerializer(serializers.Serializer):
+    """
+    Sérialiseur pour programmer un versement pour une réservation.
+    """
+    booking_id = serializers.UUIDField(required=True)
+    scheduled_date = serializers.DateTimeField(required=False)
+    
+    def validate_scheduled_date(self, value):
+        """Valide que la date programmée est future."""
+        if value and value <= timezone.now():
+            raise serializers.ValidationError(_("La date programmée doit être future."))
+        return value
 
 class CommissionSerializer(serializers.ModelSerializer):
     """Sérialiseur pour les commissions."""

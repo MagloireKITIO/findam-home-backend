@@ -544,6 +544,279 @@ class BookingViewSet(viewsets.ModelViewSet):
                 "detail": _("Une erreur est survenue lors du traitement du paiement."),
                 "error": str(e)
             }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+        
+    @action(detail=True, methods=['get'])
+    def payment_status_escrow(self, request, pk=None):
+        """
+        Vérifie le statut du paiement et des versements programmés pour cette réservation.
+        GET /api/v1/bookings/{id}/payment_status_escrow/
+        """
+        booking = self.get_object()
+        
+        # Vérifier que l'utilisateur est autorisé (propriétaire, locataire ou admin)
+        if not (request.user.is_staff or request.user == booking.tenant or request.user == booking.property.owner):
+            return Response({
+                "detail": _("Vous n'êtes pas autorisé à accéder à ces informations.")
+            }, status=status.HTTP_403_FORBIDDEN)
+        
+        try:
+            # Récupérer la dernière transaction de paiement
+            payment_transaction = booking.transactions.order_by('-created_at').first()
+            
+            # Récupérer le versement programmé associé
+            from payments.models import Payout
+            payout = Payout.objects.filter(
+                bookings__id=booking.id
+            ).order_by('-created_at').first()
+            
+            # Préparer les informations sur le paiement
+            payment_info = {
+                "booking_status": booking.status,
+                "payment_status": booking.payment_status,
+                "transaction_id": str(payment_transaction.id) if payment_transaction else None,
+                "transaction_status": payment_transaction.status if payment_transaction else None,
+                "transaction_date": payment_transaction.created_at.isoformat() if payment_transaction and payment_transaction.created_at else None,
+            }
+            
+            # Ajouter les informations sur le versement si disponible
+            if payout:
+                payment_info.update({
+                    "payout_id": str(payout.id),
+                    "payout_status": payout.status,
+                    "payout_scheduled_at": payout.scheduled_at.isoformat() if payout.scheduled_at else None,
+                    "payout_processed_at": payout.processed_at.isoformat() if payout.processed_at else None,
+                    "payout_amount": float(payout.amount) if payout.amount else None,
+                    "escrow_status": "in_escrow" if payout.status in ['pending', 'scheduled'] else "released" if payout.status == 'completed' else "processing"
+                })
+            else:
+                payment_info.update({
+                    "payout_id": None,
+                    "payout_status": None,
+                    "payout_scheduled_at": None,
+                    "payout_processed_at": None,
+                    "payout_amount": None,
+                    "escrow_status": "not_scheduled" if booking.payment_status == 'paid' else "not_paid"
+                })
+            
+            # Ajouter des informations spécifiques pour le propriétaire
+            if request.user == booking.property.owner:
+                payment_info.update({
+                    "owner_message": _get_owner_escrow_message(booking, payout)
+                })
+            
+            # Ajouter des informations spécifiques pour le locataire
+            if request.user == booking.tenant:
+                payment_info.update({
+                    "tenant_message": _get_tenant_escrow_message(booking, payout)
+                })
+            
+            return Response(payment_info)
+            
+        except Exception as e:
+            return Response({
+                "detail": str(e)
+            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+    # Fonctions d'assistance pour les messages aux utilisateurs
+    def _get_owner_escrow_message(booking, payout):
+        """Génère un message explicatif sur le statut du versement pour le propriétaire."""
+        if not payout:
+            if booking.payment_status == 'paid':
+                return _("Le paiement a été reçu. Le versement sera programmé après confirmation de l'arrivée du locataire.")
+            else:
+                return _("Le paiement n'a pas encore été effectué par le locataire.")
+        
+        if payout.status == 'pending':
+            return _("Le paiement est en séquestre. Le versement sera programmé après confirmation de l'arrivée du locataire.")
+        
+        if payout.status == 'scheduled':
+            scheduled_date = payout.scheduled_at.strftime('%d/%m/%Y') if payout.scheduled_at else "prochainement"
+            return _("Le versement est programmé pour le {}. Les fonds seront disponibles après cette date.").format(scheduled_date)
+        
+        if payout.status == 'ready':
+            return _("Le versement est en cours de traitement et sera effectué très prochainement.")
+        
+        if payout.status == 'processing':
+            return _("Le versement est en cours de traitement par notre partenaire de paiement.")
+        
+        if payout.status == 'completed':
+            processed_date = payout.processed_at.strftime('%d/%m/%Y') if payout.processed_at else "récemment"
+            return _("Le versement a été effectué le {}. Les fonds devraient être disponibles sur votre compte.").format(processed_date)
+        
+        if payout.status == 'failed':
+            return _("Le versement a échoué. Veuillez vérifier vos informations de paiement ou contacter notre service client.")
+        
+        if payout.status == 'cancelled':
+            return _("Le versement a été annulé. Veuillez contacter notre service client pour plus d'informations.")
+        
+        return _("Le statut de votre versement est actuellement en révision.")
+
+    def _get_tenant_escrow_message(booking, payout):
+        """Génère un message explicatif sur le statut du paiement pour le locataire."""
+        if booking.payment_status != 'paid':
+            return _("Votre paiement n'a pas encore été confirmé. Veuillez vérifier le statut de votre transaction.")
+        
+        # Si payé mais pas de versement programmé
+        if not payout:
+            return _("Votre paiement a été reçu. Les fonds seront conservés en séquestre jusqu'à votre arrivée pour garantir la qualité du service.")
+        
+        # Si le versement est en séquestre
+        if payout.status in ['pending', 'scheduled']:
+            return _("Votre paiement a été reçu. Les fonds sont actuellement conservés en séquestre pour garantir la qualité du service.")
+        
+        # Si le versement est en cours
+        if payout.status in ['ready', 'processing']:
+            return _("Votre paiement a été reçu et confirmé. Le versement au propriétaire est en cours de traitement.")
+        
+        # Si le versement est terminé
+        if payout.status == 'completed':
+            return _("Votre paiement a été reçu et le versement au propriétaire a été effectué. Nous vous souhaitons un excellent séjour.")
+        
+        # Si le versement a échoué ou a été annulé
+        if payout.status in ['failed', 'cancelled']:
+            return _("Votre paiement a été reçu, mais il y a eu un problème avec le versement au propriétaire. Cela n'affecte pas votre réservation. Notre équipe s'en occupe.")
+        
+        return _("Votre paiement a été reçu et est actuellement en traitement.")
+
+    # Ajouter cette nouvelle action au BookingViewSet existant
+    @action(detail=True, methods=['post'])
+    def complete_booking_and_release_funds(self, request, pk=None):
+        """
+        Marque une réservation comme terminée et déclenche le versement si ce n'est pas déjà fait.
+        POST /api/v1/bookings/{id}/complete_booking_and_release_funds/
+        """
+        booking = self.get_object()
+        
+        # Vérifier que l'utilisateur est autorisé (admin ou propriétaire)
+        if not (request.user.is_staff or request.user == booking.property.owner):
+            return Response({
+                "detail": _("Vous n'êtes pas autorisé à effectuer cette action.")
+            }, status=status.HTTP_403_FORBIDDEN)
+        
+        # Vérifier que la réservation est confirmée
+        if booking.status != 'confirmed':
+            return Response({
+                "detail": _("Seules les réservations confirmées peuvent être marquées comme terminées.")
+            }, status=status.HTTP_400_BAD_REQUEST)
+        
+        # Vérifier que le paiement est effectué
+        if booking.payment_status != 'paid':
+            return Response({
+                "detail": _("La réservation ne peut être marquée comme terminée que si le paiement est effectué.")
+            }, status=status.HTTP_400_BAD_REQUEST)
+        
+        try:
+            # Marquer la réservation comme terminée
+            booking.status = 'completed'
+            booking.save(update_fields=['status'])
+            
+            # Récupérer ou créer un versement programmé si nécessaire
+            from payments.models import Payout
+            from payments.services.payout_service import PayoutService
+            
+            # Vérifier si un versement existe déjà
+            payout = Payout.objects.filter(
+                bookings__id=booking.id,
+                status__in=['pending', 'scheduled', 'ready', 'processing']
+            ).first()
+            
+            # Si pas de versement, en programmer un
+            if not payout:
+                payout = PayoutService.schedule_payout_for_booking(booking)
+            
+            # Si le versement est programmé, le marquer comme prêt
+            if payout and payout.status == 'scheduled':
+                payout.mark_as_ready()
+                payout.admin_notes += f"\nVersement marqué comme prêt suite à complétion de la réservation par {request.user.email}"
+                payout.save(update_fields=['admin_notes'])
+            
+            return Response({
+                "detail": _("Réservation marquée comme terminée et versement déclenché avec succès."),
+                "booking_status": booking.status,
+                "payout_status": payout.status if payout else None,
+                "payout_id": str(payout.id) if payout else None
+            })
+        
+        except Exception as e:
+            return Response({
+                "detail": str(e)
+            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+    @action(detail=True, methods=['post'])
+    def immediate_release(self, request, pk=None):
+        """
+        Déclenche un versement immédiat des fonds pour cette réservation (admin uniquement).
+        POST /api/v1/bookings/{id}/immediate_release/
+        """
+        booking = self.get_object()
+        
+        # Vérifier que l'utilisateur est un administrateur
+        if not request.user.is_staff:
+            return Response({
+                "detail": _("Seuls les administrateurs peuvent déclencher un versement immédiat.")
+            }, status=status.HTTP_403_FORBIDDEN)
+        
+        # Vérifier que la réservation est confirmée ou terminée
+        if booking.status not in ['confirmed', 'completed']:
+            return Response({
+                "detail": _("Seules les réservations confirmées ou terminées peuvent faire l'objet d'un versement immédiat.")
+            }, status=status.HTTP_400_BAD_REQUEST)
+        
+        # Vérifier que le paiement est effectué
+        if booking.payment_status != 'paid':
+            return Response({
+                "detail": _("Le versement ne peut être effectué que si le paiement est reçu.")
+            }, status=status.HTTP_400_BAD_REQUEST)
+        
+        try:
+            # Récupérer les versements existants
+            from payments.models import Payout
+            
+            # Vérifier si un versement existe déjà
+            existing_payout = Payout.objects.filter(
+                bookings__id=booking.id,
+                status__in=['pending', 'scheduled', 'ready', 'processing']
+            ).first()
+            
+            if existing_payout:
+                # Si un versement existe, le marquer comme prêt
+                existing_payout.mark_as_ready()
+                existing_payout.admin_notes += f"\nVersement immédiat déclenché par admin {request.user.email}"
+                existing_payout.save(update_fields=['admin_notes'])
+                
+                payout = existing_payout
+            else:
+                # Sinon, créer un nouveau versement immédiat
+                from payments.services.payout_service import PayoutService
+                payout = PayoutService.schedule_payout_for_booking(booking)
+                
+                if payout:
+                    payout.mark_as_ready()
+                    payout.admin_notes += f"\nVersement immédiat créé par admin {request.user.email}"
+                    payout.save(update_fields=['admin_notes'])
+            
+            if not payout:
+                return Response({
+                    "detail": _("Impossible de créer un versement pour cette réservation.")
+                }, status=status.HTTP_400_BAD_REQUEST)
+            
+            # Traiter immédiatement le versement (optionnel)
+            from payments.tasks import process_ready_payouts
+            process_ready_payouts()
+            
+            # Rafraîchir l'objet pour récupérer les dernières modifications
+            payout.refresh_from_db()
+            
+            return Response({
+                "detail": _("Versement immédiat déclenché avec succès."),
+                "payout_id": str(payout.id),
+                "payout_status": payout.status
+            })
+        
+        except Exception as e:
+            return Response({
+                "detail": str(e)
+            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
     
 class PromoCodeViewSet(viewsets.ModelViewSet):
     """

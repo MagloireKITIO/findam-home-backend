@@ -359,3 +359,181 @@ class NotchPayService:
             if hasattr(e, 'response') and e.response:
                 logger.error(f"Détails: {e.response.text}")
             raise
+    
+    def get_recipients(self):
+        """
+        Récupérer la liste des destinataires enregistrés dans NotchPay
+        
+        Returns:
+            dict: Liste des destinataires ou objet d'erreur
+        """
+        try:
+            logger.info(f"Récupération des destinataires NotchPay")
+            
+            # Mettre à jour les en-têtes pour utiliser la clé privée
+            headers = self.headers.copy()
+            headers['X-Grant'] = self.private_key  # Nécessaire pour les opérations de transfert
+            
+            response = requests.get(
+                f"{self.base_url}/recipients",
+                headers=headers
+            )
+            
+            response.raise_for_status()
+            result = response.json()
+            
+            logger.info(f"Destinataires NotchPay récupérés avec succès")
+            return result
+            
+        except requests.exceptions.RequestException as e:
+            logger.error(f"Erreur lors de la récupération des destinataires NotchPay: {str(e)}")
+            if hasattr(e, 'response') and e.response:
+                logger.error(f"Détails: {e.response.text}")
+            raise
+
+    def create_recipient(self, recipient_data):
+        """
+        Créer un nouveau destinataire dans NotchPay pour les versements
+        
+        Args:
+            recipient_data (dict): Données du destinataire (channel, number, phone, email, etc.)
+                
+        Returns:
+            dict: Informations sur le destinataire créé
+        """
+        try:
+            logger.info(f"Création d'un destinataire NotchPay: {recipient_data.get('email')}")
+            
+            # Mettre à jour les en-têtes pour utiliser la clé privée
+            headers = self.headers.copy()
+            headers['X-Grant'] = self.private_key  # Nécessaire pour les opérations de transfert
+            
+            # Vérifier que les champs obligatoires sont présents
+            required_fields = ['channel', 'number', 'email', 'country', 'name']
+            for field in required_fields:
+                if field not in recipient_data:
+                    logger.error(f"Champ obligatoire manquant: {field}")
+                    raise ValueError(f"Le champ {field} est obligatoire pour créer un destinataire")
+            
+            response = requests.post(
+                f"{self.base_url}/recipients",
+                json=recipient_data,
+                headers=headers
+            )
+            
+            response.raise_for_status()
+            result = response.json()
+            
+            if 'data' in result:
+                logger.info(f"Destinataire NotchPay créé avec succès: {result.get('data', {}).get('id')}")
+                return result.get('data')
+            else:
+                logger.warning(f"Format de réponse inattendu lors de la création du destinataire: {result}")
+                return result
+            
+        except requests.exceptions.RequestException as e:
+            logger.error(f"Erreur lors de la création du destinataire NotchPay: {str(e)}")
+            if hasattr(e, 'response') and e.response:
+                logger.error(f"Détails: {e.response.text}")
+            raise
+
+    def initiate_transfer(self, amount, currency, recipient, description=None, metadata=None, reference=None):
+        """
+        Initier un transfert vers un destinataire via NotchPay
+        
+        Args:
+            amount (float): Montant à transférer
+            currency (str): Code de devise (ex: XAF)
+            recipient (str): ID du destinataire NotchPay
+            description (str, optional): Description du transfert
+            metadata (dict, optional): Métadonnées supplémentaires
+            reference (str, optional): Référence externe
+                
+        Returns:
+            dict: Réponse de l'API NotchPay contenant les détails du transfert
+        """
+        try:
+            # Générer une référence unique si non fournie
+            if not reference:
+                reference = f"findam-transfer-{uuid.uuid4().hex[:8]}-{int(timezone.now().timestamp())}"
+            
+            # Préparer le corps de la requête
+            payload = {
+                "currency": currency,
+                "amount": float(amount),
+                "recipient": recipient,
+                "description": description or "Versement via Findam",
+                "statement": "Versement Findam",  # Texte court pour les relevés bancaires
+                "reference": reference
+            }
+            
+            # Ajouter les métadonnées si fournies
+            if metadata:
+                payload["metadata"] = metadata
+            
+            logger.info(f"Initiation de transfert NotchPay: {amount} {currency} à {recipient}")
+            
+            # Mettre à jour les en-têtes pour utiliser la clé privée
+            headers = self.headers.copy()
+            headers['X-Grant'] = self.private_key  # Nécessaire pour les opérations de transfert
+            
+            response = requests.post(
+                f"{self.base_url}/transfers",
+                json=payload,
+                headers=headers
+            )
+            
+            # Log de la réponse complète
+            logger.info(f"Réponse API NotchPay - Status: {response.status_code}")
+            logger.info(f"Réponse API NotchPay - Headers: {response.headers}")
+            try:
+                logger.info(f"Réponse API NotchPay - Body: {response.json()}")
+            except:
+                logger.info(f"Réponse API NotchPay - Body: {response.text}")
+            
+            # Vérifier la réponse
+            response.raise_for_status()
+            transfer_data = response.json()
+            
+            logger.info(f"Transfert NotchPay initié avec succès: {transfer_data.get('transaction', {}).get('reference')}")
+            return transfer_data
+            
+        except requests.exceptions.RequestException as e:
+            logger.error(f"Erreur lors de l'initiation du transfert NotchPay: {str(e)}")
+            if hasattr(e, 'response') and e.response:
+                logger.error(f"Détails: {e.response.text}")
+            raise
+
+    def get_transfer(self, transfer_reference):
+        """
+        Récupérer les détails d'un transfert
+        
+        Args:
+            transfer_reference (str): Référence du transfert
+                
+        Returns:
+            dict: Informations sur le transfert
+        """
+        try:
+            logger.info(f"Récupération des détails du transfert: {transfer_reference}")
+            
+            # Mettre à jour les en-têtes pour utiliser la clé privée
+            headers = self.headers.copy()
+            headers['X-Grant'] = self.private_key  # Nécessaire pour les opérations de transfert
+            
+            response = requests.get(
+                f"{self.base_url}/transfers/{transfer_reference}",
+                headers=headers
+            )
+            
+            response.raise_for_status()
+            result = response.json()
+            
+            logger.info(f"Détails du transfert récupérés avec succès: {transfer_reference}")
+            return result
+            
+        except requests.exceptions.RequestException as e:
+            logger.error(f"Erreur lors de la récupération des détails du transfert {transfer_reference}: {str(e)}")
+            if hasattr(e, 'response') and e.response:
+                logger.error(f"Détails: {e.response.text}")
+            raise

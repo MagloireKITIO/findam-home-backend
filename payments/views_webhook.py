@@ -93,6 +93,7 @@ def notchpay_webhook(request):
         logger.exception(f"Erreur lors du traitement du webhook NotchPay: {str(e)}")
         return HttpResponse("Internal server error", status=500)
 
+
 @transaction.atomic
 def handle_payment_success(data):
     """Traiter un paiement réussi notifié par NotchPay"""
