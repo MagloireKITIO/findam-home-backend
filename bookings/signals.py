@@ -2,11 +2,11 @@
 # Gestionnaires de signaux pour automatiser les versements lors des changements de statut de réservation
 
 import logging
-from django.db.models.signals import post_save
+from django.db.models.signals import post_save, pre_delete
 from django.dispatch import receiver
 from django.utils import timezone
 from .models import Booking, PaymentTransaction
-from django.db.models.signals import pre_delete
+from properties.models import Availability
 
 
 logger = logging.getLogger('findam')
@@ -16,6 +16,9 @@ def handle_booking_status_change(sender, instance, created, **kwargs):
     """
     Gère les changements de statut d'une réservation pour programmer des versements.
     """
+    # Vérifier si le statut a changé depuis la dernière sauvegarde
+    previous_status = getattr(instance, '_previous_status', None)
+    
     if created:
         # Ne rien faire pour les nouvelles réservations
         return
@@ -86,6 +89,17 @@ def handle_booking_status_change(sender, instance, created, **kwargs):
                 payout.admin_notes += f"\nVersement annulé suite à l'annulation de la réservation (signal)"
                 payout.save(update_fields=['admin_notes'])
                 logger.info(f"Versement {payout.id} annulé suite à l'annulation de la réservation {instance.id}")
+                
+            # Si l'annulation vient d'être effectuée (changement de statut détecté)
+            if previous_status and previous_status != 'cancelled':
+                # Traiter le remboursement selon la politique si ce n'est pas déjà fait
+                # La logique complexe d'annulation est maintenant dans CancellationService
+                if not hasattr(instance, '_cancellation_processed') or not instance._cancellation_processed:
+                    # Pour éviter les traitements en double, la logique de remboursement 
+                    # devrait être gérée par le service d'annulation lors de l'appel API
+                    # Mais on pourrait ajouter un hook ici pour les changements directs de statut
+                    if instance.payment_status == 'paid':
+                        logger.info(f"Annulation détectée via signal pour la réservation {instance.id}, vérifier remboursement")
         
         except Exception as e:
             logger.exception(f"Erreur lors de l'annulation des versements pour la réservation {instance.id}: {str(e)}")
@@ -149,5 +163,35 @@ def handle_payment_status_change(sender, instance, created, **kwargs):
 @receiver(pre_delete, sender=Booking)
 def cleanup_availability_on_booking_delete(sender, instance, **kwargs):
     """Supprime les objets Availability lorsqu'une réservation est supprimée"""
-    from properties.models import Availability
     Availability.objects.filter(booking_id=instance.id).delete()
+
+# Classes de support pour la détection des changements de statut
+class BookingStatusMiddleware:
+    """
+    Middleware pour capturer l'état précédent des réservations avant leur mise à jour.
+    À utiliser avec les signaux post_save pour détecter les changements de statut.
+    """
+    
+    def __init__(self, get_response):
+        self.get_response = get_response
+    
+    def __call__(self, request):
+        # Avant de traiter la requête
+        response = self.get_response(request)
+        # Après avoir traité la requête
+        return response
+    
+    def process_view(self, request, view_func, view_args, view_kwargs):
+        # Tenter d'identifier une ressource de réservation dans l'URL
+        if 'pk' in view_kwargs and '/bookings/' in request.path:
+            try:
+                booking_id = view_kwargs['pk']
+                booking = Booking.objects.get(id=booking_id)
+                # Stocker le statut actuel avant toute modification
+                request._booking_previous_status = booking.status
+            except Booking.DoesNotExist:
+                pass
+            except Exception as e:
+                logger.error(f"Erreur lors de la capture de l'état précédent de la réservation: {str(e)}")
+        
+        return None

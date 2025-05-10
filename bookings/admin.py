@@ -2,6 +2,7 @@
 # Configuration de l'interface d'administration pour les modèles bookings
 
 from datetime import timezone
+from django.urls import reverse
 from gettext import ngettext
 from pyexpat.errors import messages
 from django.contrib import admin

@@ -105,17 +105,22 @@ class Booking(models.Model):
         verbose_name_plural = _('réservations')
         ordering = ['-created_at']
         db_table = 'findam_bookings'
+    
+    def __init__(self, *args, **kwargs):
+        """Initialisation avec capture de l'état initial pour détecter les changements."""
+        super().__init__(*args, **kwargs)
+        # Capture de l'état initial des champs clés après initialisation
+        if self.pk:  # Seulement pour les objets existants
+            self._previous_status = self.status
+        else:
+            self._previous_status = None
         
     def __str__(self):
         return f"Réservation de {self.property.title} par {self.tenant.email} du {self.check_in_date} au {self.check_out_date}"
     
     def save(self, *args, **kwargs):
         """Surcharge de la méthode save pour des comportements personnalisés."""
-        # Calculer le prix total si ce n'est pas déjà fait
-        if not self.total_price:
-            self.calculate_total_price()
-        
-        # Si c'est une nouvelle réservation, mettre à jour les disponibilités du logement
+        # Capture de l'état précédent pour les signaux
         is_new = self._state.adding
         old_status = None
         
@@ -123,8 +128,14 @@ class Booking(models.Model):
             try:
                 old_obj = Booking.objects.get(pk=self.pk)
                 old_status = old_obj.status
+                # Stocker le statut précédent pour la détection dans les signaux
+                self._previous_status = old_status
             except Booking.DoesNotExist:
                 pass
+        
+        # Calculer le prix total si ce n'est pas déjà fait
+        if not self.total_price:
+            self.calculate_total_price()
         
         # Sauvegarder d'abord
         super().save(*args, **kwargs)
@@ -204,7 +215,11 @@ class Booking(models.Model):
             ).delete()
     
     def cancel(self, cancelled_by=None):
-        """Annule la réservation."""
+        """
+        Marque la réservation comme annulée sans traiter les remboursements.
+        Cette méthode est maintenant un wrapper simple pour maintenir la compatibilité.
+        Pour une annulation complète avec remboursement, utilisez CancellationService.cancel_booking()
+        """
         self.status = 'cancelled'
         self.cancelled_at = timezone.now()
         self.cancelled_by = cancelled_by
@@ -215,8 +230,7 @@ class Booking(models.Model):
             self.promo_code.is_active = True
             self.promo_code.save(update_fields=['is_active'])
         
-        # Ajouter ici la logique de remboursement selon la politique d'annulation
-        # (à implémenter dans un service séparé)
+        return self
 
 class BookingReview(models.Model):
     """

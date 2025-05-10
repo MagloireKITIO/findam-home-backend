@@ -35,6 +35,8 @@ urlpatterns = [
     
     # Accueil - page par défaut (sera remplacée par le frontend React/Vue.js)
     path('', TemplateView.as_view(template_name='index.html'), name='home'),
+
+    path('api/v1/config/', include('common.urls')),
 ]
 
 # Ajout des URLs pour les fichiers média en développement

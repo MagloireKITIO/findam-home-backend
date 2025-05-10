@@ -98,29 +98,39 @@ class BookingViewSet(viewsets.ModelViewSet):
     @action(detail=True, methods=['post'])
     def cancel(self, request, pk=None):
         """
-        Annule une réservation.
+        Annule une réservation et gère le remboursement selon la politique applicable.
         POST /api/v1/bookings/{id}/cancel/
         """
+        from .services.cancellation_service import CancellationService
+        
         booking = self.get_object()
         
-        # Vérifier que la réservation est en attente ou confirmée
-        if booking.status not in ['pending', 'confirmed']:
+        # Récupérer la raison (optionnelle)
+        reason = request.data.get('reason', '')
+        
+        try:
+            # Utiliser le service d'annulation
+            result = CancellationService.cancel_booking(
+                booking=booking,
+                cancelled_by=request.user,
+                reason=reason
+            )
+            
+            # Renvoi des informations détaillées sur l'annulation et le remboursement
             return Response({
-                "detail": _("Seules les réservations en attente ou confirmées peuvent être annulées.")
-            }, status=status.HTTP_400_BAD_REQUEST)
-        
-        # Vérifier que la date d'arrivée n'est pas passée
-        if booking.check_in_date < timezone.now().date():
+                "detail": _("Réservation annulée avec succès."),
+                "cancellation_info": result
+            })
+            
+        except ValueError as e:
             return Response({
-                "detail": _("Vous ne pouvez pas annuler une réservation dont la date d'arrivée est passée.")
+                "detail": str(e)
             }, status=status.HTTP_400_BAD_REQUEST)
-        
-        # Annuler la réservation
-        booking.cancel(cancelled_by=request.user)
-        
-        return Response({
-            "detail": _("Réservation annulée avec succès.")
-        })
+        except Exception as e:
+            logger.exception(f"Erreur lors de l'annulation de la réservation {booking.id}: {str(e)}")
+            return Response({
+                "detail": _("Une erreur est survenue lors de l'annulation de la réservation.")
+            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
     
     @action(detail=True, methods=['post'])
     def confirm(self, request, pk=None):
@@ -817,6 +827,69 @@ class BookingViewSet(viewsets.ModelViewSet):
             return Response({
                 "detail": str(e)
             }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+    
+    @action(detail=False, methods=['get'])
+    def cancelled_with_compensation(self, request):
+        """
+        Récupère les réservations annulées avec les détails de compensation.
+        GET /api/v1/bookings/bookings/cancelled_with_compensation/
+        """
+        from .services.cancellation_service import CancellationService
+        
+        # Vérifier que l'utilisateur est bien propriétaire
+        if not request.user.is_owner and not request.user.is_staff:
+            return Response({
+                "detail": _("Seuls les propriétaires peuvent accéder à ces informations.")
+            }, status=status.HTTP_403_FORBIDDEN)
+        
+        # Récupérer les réservations annulées
+        queryset = self.get_queryset().filter(status='cancelled')
+        
+        # Appliquer les filtres standards
+        queryset = self.filter_queryset(queryset)
+        
+        # Paginer les résultats
+        page = self.paginate_queryset(queryset)
+        
+        # Sérialiser les résultats de base
+        serializer = self.get_serializer(page, many=True)
+        
+        # Ajouter les informations de compensation
+        result_data = serializer.data
+        for booking_data in result_data:
+            # Récupérer l'objet réservation
+            booking_id = booking_data.get('id')
+            try:
+                booking = Booking.objects.get(id=booking_id)
+                
+                # Calculer la compensation
+                refund_amount, refund_percentage = CancellationService.calculate_refund_amount(booking)
+                owner_compensation = CancellationService.calculate_owner_compensation(booking, refund_percentage)
+                
+                # Ajouter aux données de sortie
+                booking_data['owner_compensation'] = {
+                    'amount': float(owner_compensation),
+                    'percentage': float((1 - refund_percentage) * 100)
+                }
+                
+            except Booking.DoesNotExist:
+                booking_data['owner_compensation'] = None
+        
+        return self.get_paginated_response(result_data)
+    
+    def list(self, request, *args, **kwargs):
+        """
+        Liste les réservations avec option pour inclure les compensations.
+        """
+        # Vérifier si on demande les compensations
+        include_compensation = request.query_params.get('include_compensation', 'false').lower() == 'true'
+        
+        if include_compensation and (request.user.is_owner or request.user.is_staff):
+            # Utiliser l'action spéciale pour les compensations
+            return self.cancelled_with_compensation(request)
+        
+        # Sinon, comportement standard
+        return super().list(request, *args, **kwargs)
     
 class PromoCodeViewSet(viewsets.ModelViewSet):
     """

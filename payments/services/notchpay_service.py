@@ -537,3 +537,85 @@ class NotchPayService:
             if hasattr(e, 'response') and e.response:
                 logger.error(f"Détails: {e.response.text}")
             raise
+    
+    def process_refund(self, payment_reference, amount, description=None, metadata=None, customer_info=None):
+        """
+        Traite un remboursement pour un paiement existant via NotchPay
+        
+        Args:
+            payment_reference (str): Référence du paiement original
+            amount (float): Montant à rembourser
+            description (str, optional): Description du remboursement
+            metadata (dict, optional): Métadonnées supplémentaires
+            customer_info (dict, optional): Informations sur le client (email, phone, name)
+            
+        Returns:
+            dict: Résultat du remboursement
+        """
+        try:
+            logger.info(f"Initiation du remboursement pour la transaction {payment_reference} - Montant: {amount}")
+            
+            # Préparer le corps de la requête
+            payload = {
+                "currency": "XAF",         # Devise (obligatoire)
+                "amount": float(amount),   # Montant à rembourser
+                "reference": f"refund-{payment_reference}-{int(timezone.now().timestamp())}", # Référence unique
+                "description": description or "Remboursement",
+                "transaction_type": "refund", # Indiquer qu'il s'agit d'un remboursement
+                "refund_reference": payment_reference, # Référence du paiement original
+            }
+            
+            # CORRECTION: Ajouter les informations client (obligatoires selon l'erreur 422)
+            if customer_info:
+                if 'email' in customer_info and customer_info['email']:
+                    payload["email"] = customer_info['email']
+                if 'phone' in customer_info and customer_info['phone']:
+                    payload["phone"] = customer_info['phone']
+                if 'name' in customer_info and customer_info['name']:
+                    payload["customer_name"] = customer_info['name']
+                
+                # Ajouter également le client complet si disponible
+                payload["customer"] = {
+                    "email": customer_info.get('email', ''),
+                    "phone": customer_info.get('phone', ''),
+                    "name": customer_info.get('name', '')
+                }
+            
+            # Ajouter les métadonnées si fournies
+            if metadata:
+                payload["metadata"] = metadata
+            
+            # Log de la requête
+            logger.info(f"Requête de remboursement NotchPay: {payload}")
+            
+            # Effectuer la requête de création de paiement (remboursement)
+            response = requests.post(
+                f"{self.base_url}/payments",
+                json=payload,
+                headers=self.headers
+            )
+            
+            # Log de la réponse complète
+            logger.info(f"Réponse API NotchPay - Status: {response.status_code}")
+            logger.info(f"Réponse API NotchPay - Headers: {response.headers}")
+            try:
+                logger.info(f"Réponse API NotchPay - Body: {response.json()}")
+            except:
+                logger.info(f"Réponse API NotchPay - Body: {response.text}")
+            
+            # Vérifier la réponse
+            response.raise_for_status()
+            refund_data = response.json()
+            
+            logger.info(f"Remboursement NotchPay initié avec succès: {refund_data.get('transaction', {}).get('reference')}")
+            return refund_data
+            
+        except requests.exceptions.RequestException as e:
+            logger.error(f"Erreur lors du remboursement NotchPay: {str(e)}")
+            if hasattr(e, 'response') and e.response:
+                logger.error(f"Détails de la réponse en erreur: {e.response.status_code}")
+                try:
+                    logger.error(f"Contenu de la réponse en erreur: {e.response.json()}")
+                except:
+                    logger.error(f"Contenu de la réponse en erreur: {e.response.text}")
+            raise

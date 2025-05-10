@@ -1,7 +1,7 @@
 # payments/admin.py
 # Configuration de l'interface d'administration pour l'application payments
 
-from datetime import timezone
+from django.utils import timezone
 from gettext import ngettext
 from pyexpat.errors import messages
 from django.contrib import admin
