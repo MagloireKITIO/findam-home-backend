@@ -95,77 +95,54 @@ def notchpay_webhook(request):
 
 @transaction.atomic
 def handle_payment_success(data):
-    """
-    Traiter un paiement réussi notifié par NotchPay
-    """
+    """Traiter un paiement réussi notifié par NotchPay"""
     notchpay_reference = data.get('reference')
     merchant_reference = data.get('merchant_reference', '')
-    metadata = data.get('metadata', {})
     
-    # Identifier le type de transaction basé sur les métadonnées
-    transaction_type = metadata.get('transaction_type')
-    object_id = metadata.get('object_id')
+    # Mettre à jour directement toutes les transactions correspondantes
+    from bookings.models import PaymentTransaction, Booking
     
-    logger.info(f"Traitement du paiement réussi: {notchpay_reference}, type: {transaction_type}")
+    # 1. Chercher par référence NotchPay dans payment_response
+    transactions_updated = False
     
-    if transaction_type == 'booking':
-        # Traitement des réservations
-        try:
-            # Trouver la réservation, soit par l'ID dans les métadonnées, soit par référence marchande
-            booking = None
-            if object_id:
-                try:
-                    booking = Booking.objects.get(id=object_id)
-                except Booking.DoesNotExist:
-                    logger.warning(f"Réservation non trouvée avec ID {object_id}")
-            
-            # Si pas trouvé par ID, essayer de l'extraire de la référence marchande
-            if not booking and merchant_reference and merchant_reference.startswith('booking-'):
-                booking_id = merchant_reference.split('-')[1]
-                if booking_id:
-                    try:
-                        booking = Booking.objects.get(id=booking_id)
-                    except Booking.DoesNotExist:
-                        logger.warning(f"Réservation non trouvée avec ID extrait {booking_id}")
-            
-            if not booking:
-                logger.error(f"Booking introuvable pour la référence {object_id} ou {merchant_reference}")
-                return
-            
-            # Mettre à jour le statut de paiement de la réservation
-            booking.payment_status = 'paid'
-            booking.save(update_fields=['payment_status'])
-            
-            # Mettre à jour la transaction de paiement
-            payment_transaction = PaymentTransaction.objects.filter(booking=booking).order_by('-created_at').first()
-            
-            if payment_transaction:
-                payment_transaction.status = 'completed'
-                # Stocker la réponse complète du webhook
-                payment_response = payment_transaction.payment_response or {}
-                payment_response.update({"webhook_notification": data})
-                payment_transaction.payment_response = payment_response
-                payment_transaction.save(update_fields=['status', 'payment_response'])
-            
-            # Créer ou mettre à jour la transaction financière
-            transaction, created = Transaction.objects.update_or_create(
-                booking=booking,
-                transaction_type='payment',
-                defaults={
-                    'user': booking.tenant,
-                    'status': 'completed',
-                    'amount': booking.total_price,
-                    'currency': 'XAF',
-                    'external_reference': notchpay_reference,
-                    'description': f"Paiement pour la réservation {booking.id}",
-                    'processed_at': booking.updated_at
-                }
-            )
-            
-            logger.info(f"Réservation {booking.id} marquée comme payée, transaction {transaction.id} créée/mise à jour")
-            
-        except Exception as e:
-            logger.exception(f"Erreur lors du traitement du paiement réussi pour la réservation: {str(e)}")
+    # Parcourir toutes les transactions récentes en attente
+    for transaction in PaymentTransaction.objects.filter(status__in=['pending', 'processing']).order_by('-created_at')[:50]:
+        if transaction.payment_response and isinstance(transaction.payment_response, dict):
+            tx_reference = transaction.payment_response.get('transaction', {}).get('reference')
+            if tx_reference == notchpay_reference:
+                # Mettre à jour le statut
+                transaction.status = 'completed'
+                transaction.save(update_fields=['status'])
+                
+                # Mettre à jour la réservation
+                if transaction.booking:
+                    transaction.booking.payment_status = 'paid'
+                    transaction.booking.save(update_fields=['payment_status'])
+                    
+                transactions_updated = True
+                logger.info(f"Transaction {transaction.id} et réservation {transaction.booking.id} mises à jour via webhook")
+    
+    # Si aucune transaction n'a été mise à jour, essayer d'extraire l'ID de réservation du merchant_reference
+    if not transactions_updated and merchant_reference and merchant_reference.startswith('booking-'):
+        parts = merchant_reference.split('-')
+        if len(parts) >= 5:
+            try:
+                booking_id = f"{parts[1]}-{parts[2]}-{parts[3]}-{parts[4]}"
+                booking = Booking.objects.get(id=booking_id)
+                
+                # Mettre à jour le statut de paiement
+                booking.payment_status = 'paid'
+                booking.save(update_fields=['payment_status'])
+                
+                # Mettre à jour la transaction associée
+                tx = booking.transactions.order_by('-created_at').first()
+                if tx:
+                    tx.status = 'completed'
+                    tx.save(update_fields=['status'])
+                
+                logger.info(f"Réservation {booking.id} mise à jour via merchant_reference")
+            except Exception as e:
+                logger.error(f"Erreur lors de la mise à jour via merchant_reference: {str(e)}")
     
     elif transaction_type == 'subscription':
         # Traitement des abonnements

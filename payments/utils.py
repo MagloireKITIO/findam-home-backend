@@ -39,19 +39,23 @@ class NotchPayUtils:
     
     @staticmethod
     def convert_notchpay_status(notchpay_status):
-        """
-        Convertit un statut NotchPay en statut interne
+        """Convertit un statut NotchPay en statut interne"""
+        status_mapping = {
+            'new': PaymentStatus.PENDING,
+            'pending': PaymentStatus.PENDING,
+            'processing': PaymentStatus.PROCESSING,
+            'success': PaymentStatus.COMPLETED,
+            'successful': PaymentStatus.COMPLETED,
+            'complete': PaymentStatus.COMPLETED,  # Ajouter cette ligne
+            'completed': PaymentStatus.COMPLETED,
+            'failed': PaymentStatus.FAILED,
+            'canceled': PaymentStatus.CANCELLED,
+            'cancelled': PaymentStatus.CANCELLED,
+            'refunded': PaymentStatus.REFUNDED,
+        }
         
-        Args:
-            notchpay_status (str): Statut retourné par NotchPay
-            
-        Returns:
-            str: Statut interne correspondant
-        """
-        if not notchpay_status:
-            return PaymentStatus.PENDING
-            
-        return NotchPayUtils.PAYMENT_STATUS_MAP.get(notchpay_status.lower(), PaymentStatus.PENDING)
+        notchpay_status_lower = notchpay_status.lower() if notchpay_status else 'pending'
+        return status_mapping.get(notchpay_status_lower, PaymentStatus.PENDING)
     
     @staticmethod
     def get_mobile_operator_code(operator):
