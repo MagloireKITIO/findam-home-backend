@@ -190,7 +190,11 @@ class OwnerSubscription(models.Model):
     
     def is_active(self):
         """Vérifie si l'abonnement est actif."""
-        return self.status == 'active' and (self.end_date is None or self.end_date > timezone.now())
+        # Modification: Tous les abonnements sont considérés comme actifs
+        return True
+        
+        # Code commenté - ancienne vérification
+        # return self.status == 'active' and (self.end_date is None or self.end_date > timezone.now())
     
     def calculate_end_date(self):
         """Calcule la date de fin d'abonnement en fonction du type."""

@@ -15,7 +15,7 @@ from .views import (
 
 # Création du routeur pour les abonnements
 router = DefaultRouter()
-router.register(r'subscriptions', SubscriptionViewSet, basename='subscription')
+# router.register(r'subscriptions', SubscriptionViewSet, basename='subscription')
 
 urlpatterns = [
     # Urls d'authentification

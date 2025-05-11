@@ -115,8 +115,10 @@ class PropertyViewSet(viewsets.ModelViewSet):
             return queryset
         
         # Cas 2: Propriétaire consultant ses propres logements
-        if user.is_authenticated and hasattr(user, 'is_owner') and user.is_owner and is_owner_view:
-            return queryset.filter(owner=user)
+        # ou effectuant des actions sur ses propres logements
+        if user.is_authenticated and hasattr(user, 'is_owner') and user.is_owner:
+            if is_owner_view or self.action in ['publish', 'unpublish', 'update', 'partial_update', 'destroy']:
+                return queryset.filter(owner=user)
         
         # Cas 3: Tout autre utilisateur (authentifié ou non) - ne voit que les logements publiés ET vérifiés
         return queryset.filter(is_published=True, is_verified=True)
@@ -151,12 +153,12 @@ class PropertyViewSet(viewsets.ModelViewSet):
     def perform_create(self, serializer):
         """
         Associe automatiquement le propriétaire à la création d'un logement
-        et vérifie les limites d'abonnement.
         """
-        # Vérifier les limites d'abonnement avant de créer le logement
-        SubscriptionLimitValidator.validate_property_creation(self.request.user)
+        # Modification: Ne plus vérifier les limites d'abonnement
+        # La ligne ci-dessous est commentée/supprimée
+        # SubscriptionLimitValidator.validate_property_creation(self.request.user)
         
-        # Créer le logement si la validation passe
+        # Créer le logement directement
         serializer.save(owner=self.request.user)
     
     @action(detail=False, methods=['get'])
@@ -180,33 +182,56 @@ class PropertyViewSet(viewsets.ModelViewSet):
         Publie un logement.
         POST /api/v1/properties/{id}/publish/
         """
-        property_obj = self.get_object()
-        
-        # Vérifier que l'utilisateur est le propriétaire
-        if property_obj.owner != request.user and not request.user.is_staff:
+        try:
+            print(f"DEBUG: Tentative de récupération de la propriété avec l'ID: {pk}")
+            print(f"DEBUG: Type de pk: {type(pk)}")
+            
+            property_obj = self.get_object()
+            print(f"DEBUG: Propriété récupérée avec succès. ID: {property_obj.id}, Titre: {property_obj.title}")
+            
+            # Vérifier que l'utilisateur est le propriétaire
+            print(f"DEBUG: Utilisateur requête: {request.user.id}, Propriétaire: {property_obj.owner.id}")
+            if property_obj.owner != request.user and not request.user.is_staff:
+                print("DEBUG: L'utilisateur n'est pas autorisé")
+                return Response(
+                    {"detail": "Vous n'êtes pas autorisé à effectuer cette action."},
+                    status=status.HTTP_403_FORBIDDEN
+                )
+            
+            # Vérifier si des images sont présentes
+            image_count = property_obj.images.count()
+            print(f"DEBUG: Nombre d'images: {image_count}")
+            if not property_obj.images.exists():
+                print("DEBUG: Aucune image trouvée")
+                return Response(
+                    {"detail": "Vous devez ajouter au moins une image avant de publier."},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+            
+            # Définir comme publié
+            print(f"DEBUG: Statut actuel de publication: {property_obj.is_published}")
+            property_obj.is_published = True
+            property_obj.save(update_fields=['is_published'])
+            print("DEBUG: Enregistrement réussi, propriété publiée")
+            
+            # Retourner le logement mis à jour
+            print("DEBUG: Création du sérialiseur")
+            serializer = PropertyDetailSerializer(property_obj, context={'request': request})
+            print("DEBUG: Sérialisation réussie")
+            
+            return Response({
+                "detail": "Le logement a été publié avec succès.",
+                "property": serializer.data
+            })
+    
+        except Exception as e:
+            print(f"ERREUR: Exception lors de la publication: {str(e)}")
+            import traceback
+            traceback.print_exc()
             return Response(
-                {"detail": "Vous n'êtes pas autorisé à effectuer cette action."},
-                status=status.HTTP_403_FORBIDDEN
+                {"detail": f"Une erreur est survenue: {str(e)}"},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
             )
-        
-        # Vérifier si des images sont présentes
-        if not property_obj.images.exists():
-            return Response(
-                {"detail": "Vous devez ajouter au moins une image avant de publier."},
-                status=status.HTTP_400_BAD_REQUEST
-            )
-        
-        # Définir comme publié
-        property_obj.is_published = True
-        property_obj.save(update_fields=['is_published'])
-        
-        # Retourner le logement mis à jour
-        serializer = PropertyDetailSerializer(property_obj, context={'request': request})
-        
-        return Response({
-            "detail": "Le logement a été publié avec succès.",
-            "property": serializer.data
-        })
     
     @action(detail=True, methods=['post'])
     def unpublish(self, request, pk=None):
