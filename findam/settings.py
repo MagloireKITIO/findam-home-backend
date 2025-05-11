@@ -16,6 +16,9 @@ DEBUG = True
 
 ALLOWED_HOSTS = ['*']
 
+CSRF_TRUSTED_ORIGINS = ['https://46c4-2c0f-2a80-946-a310-fd24-69b5-e807-2268.ngrok-free.app', 'http://localhost:3000', 'http://localhost:8000']
+
+
 # Application definition
 
 DJANGO_APPS = [
@@ -246,11 +249,11 @@ NOTCHPAY_HASH_KEY = 'hsk_test.NThcqZtbkPucsO63CdIwyyvix5U9I4BVShvDdbLkLxa58Kd3rl
 NOTCHPAY_SANDBOX = True  # Définir sur False en production
 
 # URL base pour les callbacks de paiement
-PAYMENT_CALLBACK_BASE_URL = 'https://da42-102-244-223-43.ngrok-free.app'  # Domaine pour les callbacks de production
+PAYMENT_CALLBACK_BASE_URL = 'https://46c4-2c0f-2a80-946-a310-fd24-69b5-e807-2268.ngrok-free.app'  # Domaine pour les callbacks de production
 
 # En développement, utilisez ngrok ou un service similaire pour recevoir les webhooks
 if DEBUG:
-    PAYMENT_CALLBACK_BASE_URL = 'https://da42-102-244-223-43.ngrok-free.app'  # Remplacer par votre URL ngrok en développement
+    PAYMENT_CALLBACK_BASE_URL = 'https://46c4-2c0f-2a80-946-a310-fd24-69b5-e807-2268.ngrok-free.app'  # Remplacer par votre URL ngrok en développement
 
 # URL du frontend pour les redirections
 FRONTEND_URL = 'http://localhost:3000'  # URL du frontend en développement
@@ -266,6 +269,14 @@ CRONJOBS = [
     ('0 */3 * * *', 'payments.tasks.process_ready_payouts'),              # Toutes les 3 heures
     ('0 12 * * *', 'payments.tasks.check_pending_checkins'),              # Tous les jours à midi
 ]
+
+GOOGLE_OAUTH_CLIENT_ID = '981620828584-2sjvn5tcn2ekitpthias8h0tj1h6dkts.apps.googleusercontent.com'
+GOOGLE_OAUTH_CLIENT_SECRET = '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'
+GOOGLE_OAUTH_REDIRECT_URI = 'http://localhost:8000/api/v1/auth/google/callback/'
+
+FACEBOOK_APP_ID = 'votre_app_id_facebook'
+FACEBOOK_APP_SECRET = 'votre_app_secret_facebook'
+FACEBOOK_REDIRECT_URI = 'http://localhost:8000/api/v1/auth/facebook/callback/'
 
 # Configuration de logging
 LOGGING = {

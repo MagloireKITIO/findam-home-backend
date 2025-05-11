@@ -18,6 +18,8 @@ api_patterns = [
     path('auth/token/', TokenObtainPairView.as_view(), name='token_obtain_pair'),
     path('auth/token/refresh/', TokenRefreshView.as_view(), name='token_refresh'),
     path('auth/token/verify/', TokenVerifyView.as_view(), name='token_verify'),
+    # Ajoutez directement les routes d'authentification sociale ici
+    path('auth/google/', include('accounts.social_auth_urls')),  # Créez ce fichier pour contenir uniquement les routes sociales
     path('accounts/', include('accounts.urls')),
     path('properties/', include('properties.urls')),
     path('bookings/', include('bookings.urls')),

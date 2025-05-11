@@ -425,3 +425,40 @@ class PendingVerificationsView(generics.ListAPIView):
     
     def get_queryset(self):
         return User.objects.filter(profile__verification_status='pending')
+
+class CompleteProfileView(generics.UpdateAPIView):
+    """Vue pour compléter les informations du profil utilisateur après l'authentification sociale."""
+    
+    serializer_class = UserDetailSerializer
+    permission_classes = [permissions.IsAuthenticated]
+    
+    def get_object(self):
+        return self.request.user
+    
+    def patch(self, request, *args, **kwargs):
+        user = self.get_object()
+        
+        # Extraire les données
+        phone_number = request.data.get('phone_number')
+        user_type = request.data.get('user_type')
+        profile_data = request.data.get('profile', {})
+        
+        # Mettre à jour les champs utilisateur
+        if phone_number:
+            user.phone_number = phone_number
+        if user_type and user_type in ['tenant', 'owner']:
+            user.user_type = user_type
+        
+        # Sauvegarder l'utilisateur
+        user.save()
+        
+        # Mettre à jour le profil
+        if profile_data:
+            profile = user.profile
+            if profile:
+                for field, value in profile_data.items():
+                    if hasattr(profile, field):
+                        setattr(profile, field, value)
+                profile.save()
+        
+        return Response(UserDetailSerializer(user).data)
