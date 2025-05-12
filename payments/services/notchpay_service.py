@@ -396,30 +396,49 @@ class NotchPayService:
         Créer un nouveau destinataire dans NotchPay pour les versements
         
         Args:
-            recipient_data (dict): Données du destinataire (channel, number, phone, email, etc.)
+            recipient_data (dict): Données du destinataire selon l'API réelle NotchPay
+                - channel: Canal de paiement (cm.mobile, cm.orange, cm.mtn) - obligatoire
+                - account_number: Numéro pour recevoir les fonds (format +237656019261) - obligatoire
+                - phone: Numéro de téléphone de contact - optionnel
+                - email: Email du destinataire - obligatoire
+                - country: Code pays ISO (CM) - obligatoire
+                - name: Nom du destinataire - obligatoire
+                - description: Description - optionnel
+                - reference: Référence unique - optionnel
                 
         Returns:
             dict: Informations sur le destinataire créé
         """
         try:
-            logger.info(f"Création d'un destinataire NotchPay: {recipient_data.get('email')}")
+            logger.info(f"Création d'un destinataire NotchPay")
+            logger.info(f"Données envoyées: {recipient_data}")
             
             # Mettre à jour les en-têtes pour utiliser la clé privée
             headers = self.headers.copy()
             headers['X-Grant'] = self.private_key  # Nécessaire pour les opérations de transfert
             
             # Vérifier que les champs obligatoires sont présents
-            required_fields = ['channel', 'number', 'email', 'country', 'name']
-            for field in required_fields:
-                if field not in recipient_data:
-                    logger.error(f"Champ obligatoire manquant: {field}")
-                    raise ValueError(f"Le champ {field} est obligatoire pour créer un destinataire")
+            # Selon l'API réelle NotchPay: channel, account_number, email, country, name
+            required_fields = ['channel', 'account_number', 'email', 'country', 'name']
+            missing_fields = [field for field in required_fields if field not in recipient_data or not recipient_data[field]]
+            
+            if missing_fields:
+                logger.error(f"Champs obligatoires manquants: {missing_fields}")
+                raise ValueError(f"Les champs suivants sont obligatoires : {', '.join(missing_fields)}")
             
             response = requests.post(
                 f"{self.base_url}/recipients",
                 json=recipient_data,
                 headers=headers
             )
+            
+            # Log de la réponse complète
+            logger.info(f"Réponse NotchPay - Status: {response.status_code}")
+            try:
+                response_data = response.json()
+                logger.info(f"Réponse NotchPay - Body: {response_data}")
+            except:
+                logger.info(f"Réponse NotchPay - Body: {response.text}")
             
             response.raise_for_status()
             result = response.json()
@@ -428,7 +447,7 @@ class NotchPayService:
                 logger.info(f"Destinataire NotchPay créé avec succès: {result.get('data', {}).get('id')}")
                 return result.get('data')
             else:
-                logger.warning(f"Format de réponse inattendu lors de la création du destinataire: {result}")
+                logger.warning(f"Format de réponse inattendu: {result}")
                 return result
             
         except requests.exceptions.RequestException as e:

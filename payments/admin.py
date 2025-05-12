@@ -12,34 +12,35 @@ from .models import PaymentMethod, Transaction, Payout, Commission
 @admin.register(PaymentMethod)
 class PaymentMethodAdmin(admin.ModelAdmin):
     """Configuration de l'admin pour le modèle PaymentMethod."""
-    list_display = ('user_email', 'payment_type_display', 'nickname', 'is_default', 'is_verified', 'created_at')
-    list_filter = ('payment_type', 'is_default', 'is_verified', 'created_at')
-    search_fields = ('user__email', 'nickname', 'account_name', 'phone_number')
-    readonly_fields = ['created_at', 'updated_at']
+    list_display = ('user', 'payment_type', 'nickname', 'status', 'is_active', 'created_at')
+    list_filter = ('payment_type', 'status', 'is_active', 'operator')
+    search_fields = ('user__email', 'user__first_name', 'user__last_name', 'nickname')
+    list_editable = ('is_active',)
+    readonly_fields = ('notchpay_recipient_id', 'verification_attempts', 'last_verification_at')
     
     fieldsets = (
-        (_('Informations de base'), {
-            'fields': ('user', 'payment_type', 'nickname', 'is_default', 'is_verified')
+        (_('Informations générales'), {
+            'fields': ('user', 'payment_type', 'nickname', 'is_default', 'is_active', 'status')
         }),
-        (_('Informations communes'), {
-            'fields': ('account_number', 'account_name')
-        }),
-        (_('Mobile Money'), {
+        (_('Informations Mobile Money'), {
             'fields': ('phone_number', 'operator'),
-            'classes': ('collapse',),
+            'classes': ('collapse',)
         }),
-        (_('Carte Bancaire'), {
-            'fields': ('last_digits', 'expiry_date'),
-            'classes': ('collapse',),
+        (_('Informations bancaires'), {
+            'fields': ('account_number', 'account_name', 'bank_name', 'branch_code'),
+            'classes': ('collapse',)
         }),
-        (_('Compte Bancaire'), {
-            'fields': ('bank_name', 'branch_code'),
-            'classes': ('collapse',),
-        }),
-        (_('Métadonnées'), {
-            'fields': ('created_at', 'updated_at')
+        (_('Vérification'), {
+            'fields': ('notchpay_recipient_id', 'verification_attempts', 'last_verification_at', 'verification_notes'),
+            'classes': ('collapse',)
         }),
     )
+    
+    def get_readonly_fields(self, request, obj=None):
+        readonly = list(self.readonly_fields)
+        if obj:  # Editing
+            readonly.extend(['user', 'payment_type'])
+        return readonly
     
     def user_email(self, obj):
         """Affiche l'email de l'utilisateur."""

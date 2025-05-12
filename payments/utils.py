@@ -2,6 +2,9 @@
 # Utilitaires pour la gestion des paiements
 
 import logging
+import re
+import hashlib
+import hmac
 
 logger = logging.getLogger('findam')
 
@@ -103,6 +106,73 @@ class NotchPayUtils:
             return cleaned_number
             
         return cleaned_number
+    
+    @staticmethod
+    def is_valid_cameroon_phone(phone):
+        """
+        Valide un numéro de téléphone camerounais
+        """
+        if not phone:
+            return False
+        
+        # Nettoyer le numéro
+        clean_phone = re.sub(r'[\s\-\(\)]+', '', phone)
+        
+        # Patterns de validation
+        patterns = [
+            r'^\+237[6][5-9]\d{7}$',  # Format international
+            r'^237[6][5-9]\d{7}$',    # Sans le +
+            r'^[6][5-9]\d{7}$'        # Format local
+        ]
+        
+        return any(re.match(pattern, clean_phone) for pattern in patterns)
+    
+    @staticmethod
+    def detect_mobile_operator(phone):
+        """
+        Détecte automatiquement l'opérateur Mobile Money
+        """
+        if not phone:
+            return 'mobile_money'
+        
+        clean_phone = re.sub(r'[\s\-\(\)]+', '', phone)
+        
+        # Extraire les deux premiers chiffres après 237
+        if clean_phone.startswith('+237'):
+            prefix = clean_phone[4:6]
+        elif clean_phone.startswith('237'):
+            prefix = clean_phone[3:5]
+        elif clean_phone.startswith('6'):
+            prefix = clean_phone[:2]
+        else:
+            return 'mobile_money'
+        
+        # Orange Money : 69, 65
+        if prefix in ['69', '65']:
+            return 'orange'
+        # MTN MoMo : 67, 68, 66
+        elif prefix in ['67', '68', '66']:
+            return 'mtn'
+        
+        return 'mobile_money'
+    
+    @staticmethod
+    def verify_webhook_signature(payload, signature, secret_key):
+        """
+        Vérifie la signature d'un webhook NotchPay
+        """
+        if not secret_key or not signature:
+            return False
+        
+        # Calculer la signature locale
+        computed_signature = hmac.new(
+            secret_key.encode('utf-8'),
+            payload.encode('utf-8') if isinstance(payload, str) else payload,
+            hashlib.sha256
+        ).hexdigest()
+        
+        # Comparer les signatures
+        return hmac.compare_digest(computed_signature, signature)
 
 class PaymentCalculator:
     """Utilitaires pour les calculs de paiement"""

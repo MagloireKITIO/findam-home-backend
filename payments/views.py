@@ -15,17 +15,22 @@ from .serializers import (
     TransactionSerializer,
     PayoutSerializer,
     CommissionSerializer,
-    PayoutCreateSerializer
+    PaymentMethodCreateSerializer,
+    PaymentMethodDetailSerializer
 )
 from django.utils.translation import gettext as _
 
 
 class PaymentMethodViewSet(viewsets.ModelViewSet):
     """
-    ViewSet pour gérer les méthodes de paiement.
+    ViewSet pour gérer les méthodes de paiement avec activation et vérification.
     """
     serializer_class = PaymentMethodSerializer
     permission_classes = [permissions.IsAuthenticated]
+    filter_backends = [filters.SearchFilter, filters.OrderingFilter]
+    search_fields = ['nickname', 'phone_number']
+    ordering_fields = ['created_at', 'is_active', 'status']
+    ordering = ['-is_active', '-created_at']
     
     def get_queryset(self):
         """
@@ -41,17 +46,54 @@ class PaymentMethodViewSet(viewsets.ModelViewSet):
         # Pour les utilisateurs normaux, uniquement leurs méthodes de paiement
         return PaymentMethod.objects.filter(user=user)
     
+    def get_serializer_class(self):
+        """Retourne la classe de sérialiseur appropriée selon l'action"""
+        if self.action == 'create':
+            return PaymentMethodCreateSerializer
+        elif self.action in ['retrieve', 'list']:
+            return PaymentMethodDetailSerializer
+        return PaymentMethodSerializer
+    
     def perform_create(self, serializer):
         """
         Associe automatiquement l'utilisateur actuel à la méthode de paiement.
         """
-        serializer.save(user=self.request.user)
+        payment_method = serializer.save(user=self.request.user)
+        
+        # Démarrer automatiquement la vérification
+        payment_method.verify_with_notchpay()
+    
+    @action(detail=False, methods=['get'])
+    def active(self, request):
+        """
+        Récupère la méthode de paiement active de l'utilisateur.
+        GET /api/v1/payments/payment-methods/active/
+        """
+        active_method = PaymentMethod.get_active_for_user(request.user)
+        
+        if not active_method:
+            return Response({
+                "detail": "Aucune méthode de paiement active trouvée."
+            }, status=status.HTTP_404_NOT_FOUND)
+        
+        serializer = PaymentMethodDetailSerializer(active_method, context={'request': request})
+        return Response(serializer.data)
+    
+    @action(detail=False, methods=['get'])
+    def verified(self, request):
+        """
+        Récupère toutes les méthodes de paiement vérifiées de l'utilisateur.
+        GET /api/v1/payments/payment-methods/verified/
+        """
+        verified_methods = PaymentMethod.get_verified_for_user(request.user)
+        serializer = PaymentMethodDetailSerializer(verified_methods, many=True, context={'request': request})
+        return Response(serializer.data)
     
     @action(detail=True, methods=['post'])
-    def set_default(self, request, pk=None):
+    def activate(self, request, pk=None):
         """
-        Définit une méthode de paiement comme méthode par défaut.
-        POST /api/v1/payments/payment-methods/{id}/set_default/
+        Active une méthode de paiement.
+        POST /api/v1/payments/payment-methods/{id}/activate/
         """
         payment_method = self.get_object()
         
@@ -61,12 +103,251 @@ class PaymentMethodViewSet(viewsets.ModelViewSet):
                 "detail": "Vous n'êtes pas autorisé à effectuer cette action."
             }, status=status.HTTP_403_FORBIDDEN)
         
+        try:
+            payment_method.activate(user=request.user)
+            return Response({
+                "detail": "Méthode de paiement activée avec succès.",
+                "is_active": True
+            })
+        except ValueError as e:
+            return Response({
+                "detail": str(e)
+            }, status=status.HTTP_400_BAD_REQUEST)
+    
+    @action(detail=True, methods=['post'])
+    def deactivate(self, request, pk=None):
+        """
+        Désactive une méthode de paiement.
+        POST /api/v1/payments/payment-methods/{id}/deactivate/
+        """
+        payment_method = self.get_object()
+        
+        # Vérifier que la méthode de paiement appartient à l'utilisateur
+        if payment_method.user != request.user and not request.user.is_staff:
+            return Response({
+                "detail": "Vous n'êtes pas autorisé à effectuer cette action."
+            }, status=status.HTTP_403_FORBIDDEN)
+        
+        payment_method.deactivate(user=request.user)
+        return Response({
+            "detail": "Méthode de paiement désactivée avec succès.",
+            "is_active": False
+        })
+    
+    @action(detail=True, methods=['post'])
+    def verify(self, request, pk=None):
+        """
+        Déclenche une nouvelle vérification de la méthode de paiement.
+        POST /api/v1/payments/payment-methods/{id}/verify/
+        """
+        payment_method = self.get_object()
+        
+        # Vérifier que la méthode de paiement appartient à l'utilisateur
+        if payment_method.user != request.user and not request.user.is_staff:
+            return Response({
+                "detail": "Vous n'êtes pas autorisé à effectuer cette action."
+            }, status=status.HTTP_403_FORBIDDEN)
+        
+        # Limiter les tentatives de vérification
+        if payment_method.verification_attempts >= 3:
+            return Response({
+                "detail": "Nombre maximum de tentatives de vérification atteint. Contactez le support."
+            }, status=status.HTTP_429_TOO_MANY_REQUESTS)
+        
+        # Déclencher la vérification
+        success = payment_method.verify_with_notchpay()
+        
+        serializer = PaymentMethodDetailSerializer(payment_method, context={'request': request})
+        
+        return Response({
+            "detail": "Vérification réussie" if success else "Échec de la vérification",
+            "verification_success": success,
+            "payment_method": serializer.data
+        })
+    
+    @action(detail=True, methods=['post'])
+    def set_default(self, request, pk=None):
+        """
+        Définit une méthode de paiement comme méthode par défaut.
+        POST /api/v1/payments/payment-methods/{id}/set_default/
+        
+        Note: Cette action est différente d'activate. 
+        Une méthode par défaut est privilégiée lors de la sélection,
+        mais seule la méthode active sera utilisée pour les transactions.
+        """
+        payment_method = self.get_object()
+        
+        # Vérifier que la méthode de paiement appartient à l'utilisateur
+        if payment_method.user != request.user and not request.user.is_staff:
+            return Response({
+                "detail": "Vous n'êtes pas autorisé à effectuer cette action."
+            }, status=status.HTTP_403_FORBIDDEN)
+        
+        # Retirer le statut par défaut des autres méthodes
+        PaymentMethod.objects.filter(
+            user=request.user,
+            is_default=True
+        ).exclude(id=payment_method.id).update(is_default=False)
+        
         # Définir comme méthode par défaut
         payment_method.is_default = True
-        payment_method.save()
+        payment_method.save(update_fields=['is_default'])
         
         return Response({
             "detail": "Méthode de paiement définie comme méthode par défaut avec succès."
+        })
+    
+    @action(detail=False, methods=['get'])
+    def summary(self, request):
+        """
+        Récupère un résumé des méthodes de paiement de l'utilisateur.
+        GET /api/v1/payments/payment-methods/summary/
+        """
+        user = request.user
+        
+        # Compter les méthodes par statut
+        total_methods = PaymentMethod.objects.filter(user=user).count()
+        verified_methods = PaymentMethod.objects.filter(user=user, status='verified').count()
+        pending_methods = PaymentMethod.objects.filter(user=user, status='pending').count()
+        failed_methods = PaymentMethod.objects.filter(user=user, status='failed').count()
+        
+        # Compter les méthodes par type
+        mobile_money_count = PaymentMethod.objects.filter(
+            user=user, 
+            payment_type='mobile_money',
+            status='verified'
+        ).count()
+        bank_account_count = PaymentMethod.objects.filter(
+            user=user, 
+            payment_type='bank_account',
+            status='verified'
+        ).count()
+        
+        # Méthode active
+        active_method = PaymentMethod.get_active_for_user(user)
+        
+        return Response({
+            'total_methods': total_methods,
+            'verified_methods': verified_methods,
+            'pending_methods': pending_methods,
+            'failed_methods': failed_methods,
+            'mobile_money_count': mobile_money_count,
+            'bank_account_count': bank_account_count,
+            'has_active_method': active_method is not None,
+            'active_method': PaymentMethodDetailSerializer(active_method, context={'request': request}).data if active_method else None
+        })
+    
+    @action(detail=False, methods=['post'], permission_classes=[IsAdminUser])
+    def bulk_verify(self, request):
+        """
+        Vérification en lot pour les administrateurs.
+        POST /api/v1/payments/payment-methods/bulk_verify/
+        """
+        method_ids = request.data.get('method_ids', [])
+        
+        if not method_ids:
+            return Response({
+                "detail": "Aucun ID de méthode fourni."
+            }, status=status.HTTP_400_BAD_REQUEST)
+        
+        methods = PaymentMethod.objects.filter(id__in=method_ids)
+        results = []
+        
+        for method in methods:
+            success = method.verify_with_notchpay()
+            results.append({
+                'id': method.id,
+                'success': success,
+                'status': method.status
+            })
+        
+        return Response({
+            'results': results,
+            'success_count': sum(1 for r in results if r['success']),
+            'total_count': len(results)
+        })
+    
+    def destroy(self, request, *args, **kwargs):
+        """
+        Supprime une méthode de paiement avec vérifications de sécurité.
+        """
+        payment_method = self.get_object()
+        
+        # Vérifier que la méthode de paiement appartient à l'utilisateur
+        if payment_method.user != request.user and not request.user.is_staff:
+            return Response({
+                "detail": "Vous n'êtes pas autorisé à effectuer cette action."
+            }, status=status.HTTP_403_FORBIDDEN)
+        
+        # Vérifier s'il y a des transactions en cours utilisant cette méthode
+        pending_payouts = Payout.objects.filter(
+            payment_method=payment_method,
+            status__in=['pending', 'scheduled', 'ready', 'processing']
+        )
+        
+        if pending_payouts.exists():
+            return Response({
+                "detail": "Impossible de supprimer cette méthode. Des versements sont en cours avec cette méthode."
+            }, status=status.HTTP_400_BAD_REQUEST)
+        
+        # Si c'est la méthode active, proposer de la remplacer
+        if payment_method.is_active:
+            other_verified = PaymentMethod.objects.filter(
+                user=payment_method.user,
+                status='verified'
+            ).exclude(id=payment_method.id).first()
+            
+            if other_verified:
+                other_verified.activate()
+                return Response({
+                    "detail": f"Méthode supprimée. {other_verified} a été activée automatiquement."
+                })
+        
+        payment_method.delete()
+        return Response({
+            "detail": "Méthode de paiement supprimée avec succès."
+        })
+    
+    @action(detail=True, methods=['get'])
+    def verify_status(self, request, pk=None):
+        """
+        Vérifie le statut d'une méthode de paiement dans NotchPay.
+        GET /api/v1/payments/payment-methods/{id}/verify_status/
+        """
+        payment_method = self.get_object()
+        
+        # Vérifier que la méthode de paiement appartient à l'utilisateur
+        if payment_method.user != request.user and not request.user.is_staff:
+            return Response({
+                "detail": "Vous n'êtes pas autorisé à effectuer cette action."
+            }, status=status.HTTP_403_FORBIDDEN)
+        
+        # Si on a un ID destinataire NotchPay, vérifier son statut
+        if payment_method.notchpay_recipient_id:
+            try:
+                from .services.notchpay_service import NotchPayService
+                notchpay_service = NotchPayService()
+                
+                # Récupérer les informations du destinataire depuis NotchPay
+                # Note: Cette méthode pourrait ne pas exister dans l'API NotchPay
+                # À adapter selon la documentation
+                
+                return Response({
+                    "status": payment_method.status,
+                    "is_active": payment_method.is_active,
+                    "notchpay_recipient_id": payment_method.notchpay_recipient_id,
+                    "verification_attempts": payment_method.verification_attempts,
+                    "last_verification_at": payment_method.last_verification_at
+                })
+            except Exception as e:
+                return Response({
+                    "detail": f"Erreur lors de la vérification du statut: {str(e)}"
+                }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+        
+        return Response({
+            "status": payment_method.status,
+            "is_active": payment_method.is_active,
+            "notification": "Aucun ID destinataire NotchPay trouvé"
         })
 
 class TransactionViewSet(viewsets.ReadOnlyModelViewSet):
