@@ -6,6 +6,7 @@ import json
 import requests
 import uuid
 from urllib.parse import urlencode
+import logging
 
 from django.conf import settings
 from django.contrib.auth import get_user_model
@@ -21,7 +22,7 @@ from rest_framework_simplejwt.tokens import RefreshToken
 from .models import SocialAccount, User, Profile
 
 User = get_user_model()
-
+logger = logging.getLogger(__name__)
 # Configuration des providers d'authentification sociale
 SOCIAL_AUTH_PROVIDERS = {
     'google': {
@@ -77,48 +78,69 @@ class GoogleCallbackView(views.APIView):
     permission_classes = [AllowAny]
     
     def get(self, request):
-        # Récupérer le code et l'état de la redirection
-        code = request.query_params.get('code', None)
-        state = request.query_params.get('state', None)
-        
-        # Vérifier si l'état correspond à celui stocké dans la session (protection CSRF)
-        saved_state = request.session.get('oauth_state', None)
-        if not saved_state or state != saved_state:
-            return Response({'error': 'État invalide'}, status=status.HTTP_400_BAD_REQUEST)
-        
-        # Supprimer l'état de la session
-        request.session.pop('oauth_state', None)
-        
-         # Échanger le code contre un token d'accès
-        token_data = self._exchange_code_for_token(code)
-        if not token_data:
-            return Response({'error': 'Échec de l\'échange du code contre un token'}, status=status.HTTP_400_BAD_REQUEST)
-        
-        # Récupérer les infos utilisateur
-        user_info = self._get_user_info(token_data.get('access_token'))
-        if not user_info:
-            return Response({'error': 'Échec de la récupération des informations utilisateur'}, status=status.HTTP_400_BAD_REQUEST)
-        
-        # Créer ou mettre à jour l'utilisateur - ajoutez un drapeau pour savoir si c'est un nouvel utilisateur
-        user, is_new_user = self._get_or_create_user(user_info, 'google')
-        
-        # Générer les tokens JWT
-        refresh = RefreshToken.for_user(user)
-        tokens = {
-            'refresh': str(refresh),
-            'access': str(refresh.access_token),
-        }
-        
-        # Rediriger vers différentes pages selon que l'utilisateur est nouveau ou existant
-        if is_new_user:
-            # Rediriger vers la page de complétion du profil
-            frontend_callback_url = f"{settings.FRONTEND_URL}/auth/complete-profile?provider=google&access_token={tokens['access']}&refresh_token={tokens['refresh']}&is_new=true"
-        else:
-            # Rediriger vers la page d'accueil/dashboard pour les utilisateurs existants
-            frontend_callback_url = f"{settings.FRONTEND_URL}/auth/callback?provider=google&access_token={tokens['access']}&refresh_token={tokens['refresh']}"
-        
-        return HttpResponseRedirect(frontend_callback_url)
+        try:
+            # Récupérer le code et l'état de la redirection
+            code = request.query_params.get('code', None)
+            state = request.query_params.get('state', None)
+            
+            logger.info(f"GoogleCallbackView - Code reçu: {bool(code)}, State reçu: {bool(state)}")
+            
+            # Vérifier si l'état correspond à celui stocké dans la session (protection CSRF)
+            saved_state = request.session.get('oauth_state', None)
+            if not saved_state or state != saved_state:
+                logger.error(f"GoogleCallbackView - État invalide: saved_state={saved_state}, state={state}")
+                return Response({'error': 'État invalide'}, status=status.HTTP_400_BAD_REQUEST)
+            
+            # Supprimer l'état de la session
+            request.session.pop('oauth_state', None)
+            
+            # Échanger le code contre un token d'accès
+            token_data = self._exchange_code_for_token(code)
+            if not token_data:
+                logger.error("GoogleCallbackView - Échec de l'échange du code contre un token")
+                return Response({'error': 'Échec de l\'échange du code contre un token'}, status=status.HTTP_400_BAD_REQUEST)
+            
+            # Récupérer les infos utilisateur
+            user_info = self._get_user_info(token_data.get('access_token'))
+            if not user_info:
+                logger.error("GoogleCallbackView - Échec de la récupération des informations utilisateur")
+                return Response({'error': 'Échec de la récupération des informations utilisateur'}, status=status.HTTP_400_BAD_REQUEST)
+            
+            logger.info(f"GoogleCallbackView - Infos utilisateur récupérées: email={user_info.get('email')}")
+            
+            # Créer ou mettre à jour l'utilisateur
+            try:
+                user, is_new_user = self._get_or_create_user(user_info, 'google')
                 
+                # Générer les tokens JWT
+                refresh = RefreshToken.for_user(user)
+                tokens = {
+                    'refresh': str(refresh),
+                    'access': str(refresh.access_token),
+                }
+                
+                # Rediriger vers différentes pages selon que l'utilisateur est nouveau ou existant
+                if is_new_user:
+                    # Rediriger vers la page de complétion du profil
+                    logger.info(f"GoogleCallbackView - Nouvel utilisateur créé, redirection vers complétion de profil: {user.email}")
+                    frontend_callback_url = f"{settings.FRONTEND_URL}/auth/callback?provider=google&access_token={tokens['access']}&refresh_token={tokens['refresh']}&is_new=true"
+                else:
+                    # Rediriger vers la page d'accueil/dashboard pour les utilisateurs existants
+                    logger.info(f"GoogleCallbackView - Utilisateur existant, redirection vers callback: {user.email}")
+                    frontend_callback_url = f"{settings.FRONTEND_URL}/auth/callback?provider=google&access_token={tokens['access']}&refresh_token={tokens['refresh']}"
+                
+                logger.info(f"GoogleCallbackView - URL de redirection: {frontend_callback_url}")
+                return HttpResponseRedirect(frontend_callback_url)
+            
+            except Exception as e:
+                logger.exception(f"GoogleCallbackView - Erreur lors de la création/récupération de l'utilisateur: {str(e)}")
+                return Response({'error': f'Erreur lors de la création/récupération de l\'utilisateur: {str(e)}'}, 
+                               status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+                
+        except Exception as e:
+            logger.exception(f"GoogleCallbackView - Erreur non gérée: {str(e)}")
+            return Response({'error': f'Erreur serveur: {str(e)}'}, 
+                           status=status.HTTP_500_INTERNAL_SERVER_ERROR)
     
     def _exchange_code_for_token(self, code):
         """Échange le code d'autorisation contre un token d'accès"""
@@ -132,12 +154,15 @@ class GoogleCallbackView(views.APIView):
         }
         
         try:
+            logger.info(f"_exchange_code_for_token - Tentative d'échange de code, URL: {token_url}")
             response = requests.post(token_url, data=data)
             if response.status_code == 200:
+                logger.info("_exchange_code_for_token - Échange réussi")
                 return response.json()
+            logger.error(f"_exchange_code_for_token - Échec de l'échange, statut: {response.status_code}, réponse: {response.text}")
             return None
         except Exception as e:
-            print(f"Erreur lors de l'échange du code: {str(e)}")
+            logger.exception(f"_exchange_code_for_token - Erreur: {str(e)}")
             return None
     
     def _get_user_info(self, access_token):
@@ -146,48 +171,62 @@ class GoogleCallbackView(views.APIView):
         headers = {'Authorization': f'Bearer {access_token}'}
         
         try:
+            logger.info(f"_get_user_info - Tentative de récupération des infos utilisateur, URL: {user_info_url}")
             response = requests.get(user_info_url, headers=headers)
             if response.status_code == 200:
-                return response.json()
+                user_info = response.json()
+                logger.info(f"_get_user_info - Infos récupérées pour l'email: {user_info.get('email')}")
+                return user_info
+            logger.error(f"_get_user_info - Échec de récupération, statut: {response.status_code}, réponse: {response.text}")
             return None
         except Exception as e:
-            print(f"Erreur lors de la récupération des infos utilisateur: {str(e)}")
+            logger.exception(f"_get_user_info - Erreur: {str(e)}")
             return None
     
     def _get_or_create_user(self, user_info, provider):
         """Crée ou met à jour un utilisateur à partir des informations Google"""
         email = user_info.get('email')
         if not email:
+            logger.error("_get_or_create_user - Email manquant dans les infos utilisateur")
             raise ValueError("L'email est requis")
         
         # Créer ou récupérer un utilisateur
         try:
+            logger.info(f"_get_or_create_user - Recherche de l'utilisateur avec email: {email}")
             user = User.objects.get(email=email)
+            logger.info(f"_get_or_create_user - Utilisateur existant trouvé: {user.id}")
             is_new_user = False
         except User.DoesNotExist:
-            # Créer un nouvel utilisateur avec des valeurs par défaut minimales
+            logger.info(f"_get_or_create_user - Création d'un nouvel utilisateur pour: {email}")
+            # Créer un nouvel utilisateur avec des valeurs par défaut
             user = User.objects.create_user(
                 email=email,
                 phone_number="+0000000000",  # Numéro temporaire
                 first_name=user_info.get('given_name', ''),
                 last_name=user_info.get('family_name', ''),
                 is_active=True,
-                # Ne pas fixer le user_type pour l'instant, il sera défini dans le formulaire de complétion
-                user_type=''  # Laissez vide ou utilisez une valeur par défaut selon votre modèle
+                # Définir un type d'utilisateur par défaut (sera confirmé par l'utilisateur)
+                user_type='tenant'  # Valeur par défaut temporaire
             )
+            logger.info(f"_get_or_create_user - Nouvel utilisateur créé avec ID: {user.id}")
             is_new_user = True
         
         # Créer ou mettre à jour le compte social
-        SocialAccount.objects.update_or_create(
-            user=user,
-            provider=provider,
-            defaults={
-                'provider_user_id': user_info.get('sub', ''),
-                'email': email,
-                'name': f"{user_info.get('given_name', '')} {user_info.get('family_name', '')}",
-                'extra_data': user_info
-            }
-        )
+        try:
+            social_account, created = SocialAccount.objects.update_or_create(
+                user=user,
+                provider=provider,
+                defaults={
+                    'provider_user_id': user_info.get('sub', ''),
+                    'email': email,
+                    'name': f"{user_info.get('given_name', '')} {user_info.get('family_name', '')}",
+                    'extra_data': user_info
+                }
+            )
+            logger.info(f"_get_or_create_user - Compte social {'créé' if created else 'mis à jour'}: {social_account.id}")
+        except Exception as e:
+            logger.exception(f"_get_or_create_user - Erreur lors de la création/mise à jour du compte social: {str(e)}")
+            # Ne pas bloquer le processus pour une erreur sur le compte social
         
         return user, is_new_user
 
