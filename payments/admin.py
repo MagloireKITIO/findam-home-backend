@@ -7,7 +7,7 @@ from pyexpat.errors import messages
 from django.contrib import admin
 from django.utils.translation import gettext_lazy as _
 from django.utils.html import format_html
-from .models import PaymentMethod, Transaction, Payout, Commission
+from .models import PaymentMethod, Transaction, Payout, Commission, PaymentMethodChange
 
 @admin.register(PaymentMethod)
 class PaymentMethodAdmin(admin.ModelAdmin):
@@ -52,6 +52,107 @@ class PaymentMethodAdmin(admin.ModelAdmin):
     
     user_email.short_description = _('Utilisateur')
     payment_type_display.short_description = _('Type de paiement')
+
+@admin.register(PaymentMethodChange)
+class PaymentMethodChangeAdmin(admin.ModelAdmin):
+    """Configuration de l'admin pour les modifications de méthodes de paiement des propriétaires"""
+    
+    list_display = [
+        'get_owner_name', 
+        'get_owner_email', 
+        'change_type', 
+        'get_payment_method_type',
+        'status', 
+        'created_at',
+        'reviewed_by'
+    ]
+    
+    list_filter = [
+        'change_type', 
+        'status', 
+        'created_at',
+        'payment_method__payment_type'
+    ]
+    
+    search_fields = [
+        'payment_method__user__first_name',
+        'payment_method__user__last_name',
+        'payment_method__user__email'
+    ]
+    
+    readonly_fields = [
+        'id',
+        'payment_method', 
+        'change_type', 
+        'modified_by',
+        'previous_data',
+        'created_at',
+        'updated_at'
+    ]
+    
+    fieldsets = (
+        (_('Informations de base'), {
+            'fields': ('payment_method', 'change_type', 'status', 'modified_by')
+        }),
+        (_('Dates'), {
+            'fields': ('created_at', 'updated_at', 'reviewed_at')
+        }),
+        (_('Révision'), {
+            'fields': ('reviewed_by', 'admin_notes')
+        }),
+        (_('Données techniques'), {
+            'fields': ('id', 'previous_data'),
+            'classes': ('collapse',)
+        }),
+    )
+    
+    ordering = ['-created_at']
+    
+    def get_owner_name(self, obj):
+        return obj.payment_method.user.get_full_name() or obj.payment_method.user.email
+    get_owner_name.short_description = _('Propriétaire')
+    
+    def get_owner_email(self, obj):
+        return obj.payment_method.user.email
+    get_owner_email.short_description = _('Email')
+    
+    def get_payment_method_type(self, obj):
+        return obj.payment_method.get_payment_type_display()
+    get_payment_method_type.short_description = _('Type de méthode')
+    
+    def save_model(self, request, obj, form, change):
+        """Auto-remplir reviewed_by et reviewed_at lors de l'approbation/rejet"""
+        if change and form.initial.get('status') != form.cleaned_data.get('status'):
+            obj.reviewed_by = request.user
+            obj.reviewed_at = timezone.now()
+        super().save_model(request, obj, form, change)
+    
+    # Ajout des actions custom
+    actions = ['approve_changes', 'reject_changes']
+    
+    def approve_changes(self, request, queryset):
+        """Approuver les modifications sélectionnées"""
+        updated = queryset.filter(status='pending').update(
+            status='approved',
+            reviewed_by=request.user,
+            reviewed_at=timezone.now()
+        )
+        self.message_user(request, f"{updated} modification(s) approuvée(s).")
+    approve_changes.short_description = _("Approuver les modifications sélectionnées")
+    
+    def reject_changes(self, request, queryset):
+        """Rejeter les modifications sélectionnées"""
+        updated = queryset.filter(status='pending').update(
+            status='rejected',
+            reviewed_by=request.user,
+            reviewed_at=timezone.now()
+        )
+        self.message_user(request, f"{updated} modification(s) rejetée(s).")
+    reject_changes.short_description = _("Rejeter les modifications sélectionnées")
+    
+    def has_delete_permission(self, request, obj=None):
+        """Empêcher la suppression des logs de modification"""
+        return False
 
 class BookingInline(admin.TabularInline):
     """Configuration inline pour les réservations d'un versement."""

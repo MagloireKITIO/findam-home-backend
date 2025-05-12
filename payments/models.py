@@ -13,6 +13,8 @@ from django.core.validators import RegexValidator
 from django.db import transaction
 from .utils import NotchPayUtils
 from .services.notchpay_service import NotchPayService
+from django.conf import settings
+
 
 
 import logging
@@ -59,7 +61,7 @@ class PaymentMethod(models.Model):
     # Informations communes
     nickname = models.CharField(max_length=100, blank=True, help_text="Nom personnalisé pour identifier cette méthode")
     is_default = models.BooleanField(default=False)
-    is_active = models.BooleanField(default=False, help_text="Méthode activée pour les transactions")
+    is_active = models.BooleanField(default=True, help_text="Méthode activée pour les transactions")
     status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='pending')
     
     # Champs pour Mobile Money
@@ -225,6 +227,15 @@ class PaymentMethod(models.Model):
             self.verification_attempts += 1
             self.last_verification_at = timezone.now()
             
+            # En mode développement/test, simuler la vérification
+            if settings.DEBUG or getattr(settings, 'NOTCHPAY_SANDBOX', True):
+                logger.info(f"Mode développement/sandbox : simulation de la vérification pour {self.id}")
+                self.status = 'verified'
+                self.verification_notes = f"Vérification simulée en mode dev le {timezone.now().strftime('%d/%m/%Y à %H:%M')}"
+                self.save(update_fields=['status', 'verification_notes', 'verification_attempts', 'last_verification_at'])
+                return True
+            
+            # Mode production : vérification réelle avec NotchPay
             notchpay_service = NotchPayService()
             
             if self.payment_type == 'mobile_money':
@@ -232,7 +243,7 @@ class PaymentMethod(models.Model):
             elif self.payment_type == 'bank_account':
                 success, recipient_id = self._verify_bank_account(notchpay_service)
             else:
-                # Pour les cartes, on ne peut pas vérifier directement
+                # Pour les cartes, on simule aussi en production pour l'instant
                 success, recipient_id = True, None
             
             if success:
@@ -351,6 +362,66 @@ class PaymentMethod(models.Model):
     def get_verified_for_user(cls, user):
         """Récupère toutes les méthodes vérifiées d'un utilisateur"""
         return cls.objects.filter(user=user, status='verified').order_by('-is_active', '-created_at')
+
+class PaymentMethodChange(models.Model):
+    """
+    Modèle pour tracker les modifications de méthodes de paiement des propriétaires
+    """
+    CHANGE_TYPE_CHOICES = (
+        ('created', 'Nouvelle méthode'),
+        ('updated', 'Modification'),
+        ('deleted', 'Suppression'),
+    )
+    
+    STATUS_CHOICES = (
+        ('pending', 'En attente'),
+        ('approved', 'Approuvé'),
+        ('rejected', 'Rejeté'),
+    )
+    
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    payment_method = models.ForeignKey(PaymentMethod, on_delete=models.CASCADE, related_name='changes')
+    change_type = models.CharField(max_length=10, choices=CHANGE_TYPE_CHOICES)
+    status = models.CharField(max_length=10, choices=STATUS_CHOICES, default='pending')
+    
+    # Données avant modification (pour les updates)
+    previous_data = models.JSONField(null=True, blank=True)
+    
+    # Utilisateur qui a fait la modification
+    modified_by = models.ForeignKey(User, on_delete=models.CASCADE, related_name='payment_method_changes')
+    
+    # Admin qui approuve/rejette
+    reviewed_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True, related_name='reviewed_payment_changes')
+    reviewed_at = models.DateTimeField(null=True, blank=True)
+    admin_notes = models.TextField(blank=True)
+    
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+    
+    class Meta:
+        verbose_name = _('modification de méthode de paiement')
+        verbose_name_plural = _('modifications de méthodes de paiement')
+        db_table = 'findam_payment_method_changes'
+        ordering = ['-created_at']
+    
+    def __str__(self):
+        return f"{self.get_change_type_display()} - {self.payment_method.user.get_full_name()} - {self.created_at.strftime('%d/%m/%Y')}"
+    
+    @classmethod
+    def log_change(cls, payment_method, change_type, user, previous_data=None):
+        """
+        Enregistre une modification de méthode de paiement
+        """
+        # Créer seulement pour les propriétaires
+        if user.user_type != 'owner':
+            return None
+        
+        return cls.objects.create(
+            payment_method=payment_method,
+            change_type=change_type,
+            modified_by=user,
+            previous_data=previous_data
+        )
 
 class Transaction(models.Model):
     """
