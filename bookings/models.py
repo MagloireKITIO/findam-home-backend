@@ -17,7 +17,7 @@ class PromoCode(models.Model):
     """
     code = models.CharField(_('code'), max_length=20, unique=True)
     property = models.ForeignKey(Property, on_delete=models.CASCADE, related_name='promo_codes')
-    tenant = models.ForeignKey(User, on_delete=models.CASCADE, related_name='promo_codes')
+    tenant = models.ForeignKey(User, on_delete=models.CASCADE, related_name='promo_codes', null=True, blank=True)
     discount_percentage = models.DecimalField(
         _('pourcentage de réduction'), 
         max_digits=5, 
@@ -48,6 +48,19 @@ class PromoCode(models.Model):
         """Marque le code promo comme utilisé (désactivé)."""
         self.is_active = False
         self.save(update_fields=['is_active'])
+    
+    def is_valid_for_user(self, user):
+        """Vérifie si le code promo est valide pour un utilisateur donné."""
+        # Le code n'est pas valide pour le propriétaire du logement
+        if user == self.property.owner:
+            return False
+        
+        # Si pas de tenant spécifié, valide pour tous (sauf propriétaire)
+        if not self.tenant:
+            return True
+        
+        # Si tenant spécifié, valide seulement pour ce tenant
+        return self.tenant == user
 
 class Booking(models.Model):
     """

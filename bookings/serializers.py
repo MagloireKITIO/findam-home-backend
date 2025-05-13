@@ -47,9 +47,11 @@ class PromoCodeSerializer(serializers.ModelSerializer):
 class PromoCodeCreateSerializer(serializers.ModelSerializer):
     """Sérialiseur pour la création de codes promotionnels."""
     
+    tenant_email = serializers.EmailField(required=False, allow_blank=True, write_only=True)
+    
     class Meta:
         model = PromoCode
-        fields = ['property', 'tenant', 'discount_percentage', 'expiry_date']
+        fields = ['property', 'tenant_email', 'discount_percentage', 'expiry_date']
     
     def validate(self, data):
         """Validation personnalisée."""
@@ -68,12 +70,25 @@ class PromoCodeCreateSerializer(serializers.ModelSerializer):
                     _("Vous ne pouvez créer des codes promo que pour vos propres logements.")
                 )
         
-        # Vérifier que le propriétaire est différent du locataire
-        tenant = data.get('tenant')
-        if property_obj and tenant and property_obj.owner == tenant:
-            raise serializers.ValidationError(
-                _("Vous ne pouvez pas créer un code promo pour vous-même.")
-            )
+        # Gérer le tenant par email (optionnel)
+        tenant_email = data.pop('tenant_email', None)
+        if tenant_email and tenant_email.strip():
+            try:
+                from accounts.models import User
+                tenant = User.objects.get(email=tenant_email.strip())
+                data['tenant'] = tenant
+                
+                # Vérifier que le propriétaire est différent du locataire
+                if property_obj and tenant and property_obj.owner == tenant:
+                    raise serializers.ValidationError(
+                        _("Vous ne pouvez pas créer un code promo pour vous-même.")
+                    )
+            except User.DoesNotExist:
+                raise serializers.ValidationError(
+                    _("Aucun utilisateur trouvé avec cet email.")
+                )
+        # Si pas d'email fourni, le code sera utilisable par tous (sauf propriétaire)
+        # Le champ tenant restera None
         
         return data
     
@@ -85,6 +100,10 @@ class PromoCodeCreateSerializer(serializers.ModelSerializer):
         
         code_length = 8
         code = ''.join(random.choices(string.ascii_uppercase + string.digits, k=code_length))
+        
+        # Vérifier l'unicité du code
+        while PromoCode.objects.filter(code=code).exists():
+            code = ''.join(random.choices(string.ascii_uppercase + string.digits, k=code_length))
         
         # Ajouter le créateur
         validated_data['created_by'] = self.context.get('request').user
@@ -208,9 +227,12 @@ class BookingCreateSerializer(serializers.ModelSerializer):
                     expiry_date__gt=timezone.now()
                 )
                 
-                # Vérifier que le code promo est bien pour ce locataire
-                if promo_code.tenant != self.context.get('request').user:
-                    raise serializers.ValidationError(_("Ce code promo ne vous est pas destiné."))
+                # Utiliser la nouvelle méthode de validation
+                if not promo_code.is_valid_for_user(self.context.get('request').user):
+                    if promo_code.tenant:
+                        raise serializers.ValidationError(_("Ce code promo ne vous est pas destiné."))
+                    else:
+                        raise serializers.ValidationError(_("Vous ne pouvez pas utiliser votre propre code promo."))
                 
                 data['promo_code'] = promo_code
             except PromoCode.DoesNotExist:

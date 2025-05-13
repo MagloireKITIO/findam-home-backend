@@ -932,34 +932,41 @@ class PromoCodeViewSet(viewsets.ModelViewSet):
     def validate_code(self, request):
         """
         Valide un code promo pour un logement.
-        GET /api/v1/bookings/promo-codes/validate-code/?code=XXX&property=YYY
+        GET /api/v1/bookings/promo-codes/validate_code/?code=XXX&property=YYY
         """
         code = request.query_params.get('code')
         property_id = request.query_params.get('property')
         
         if not code or not property_id:
             return Response({
+                "valid": False,
                 "detail": _("Code promo et ID de logement requis.")
             }, status=status.HTTP_400_BAD_REQUEST)
         
         try:
-            promo_code = PromoCode.objects.get(
+            promo_code = PromoCode.objects.select_related('property', 'tenant').get(
                 code=code,
                 property_id=property_id,
                 is_active=True,
                 expiry_date__gt=timezone.now()
             )
             
-            # Vérifier que le code promo est bien pour ce locataire
-            if promo_code.tenant != request.user and not request.user.is_staff:
-                return Response({
-                    "valid": False,
-                    "detail": _("Ce code promo ne vous est pas destiné.")
-                }, status=status.HTTP_403_FORBIDDEN)
+            # Vérifier si le code est valide pour cet utilisateur
+            if not promo_code.is_valid_for_user(request.user):
+                if promo_code.tenant:
+                    return Response({
+                        "valid": False,
+                        "detail": _("Ce code promo ne vous est pas destiné.")
+                    }, status=status.HTTP_403_FORBIDDEN)
+                else:
+                    return Response({
+                        "valid": False,
+                        "detail": _("Vous ne pouvez pas utiliser votre propre code promo.")
+                    }, status=status.HTTP_403_FORBIDDEN)
             
             return Response({
                 "valid": True,
-                "promo_code": PromoCodeSerializer(promo_code).data
+                "promo_code": PromoCodeSerializer(promo_code, context={'request': request}).data
             })
             
         except PromoCode.DoesNotExist:
@@ -967,6 +974,12 @@ class PromoCodeViewSet(viewsets.ModelViewSet):
                 "valid": False,
                 "detail": _("Code promo invalide ou expiré.")
             }, status=status.HTTP_404_NOT_FOUND)
+        except Exception as e:
+            logger.exception(f"Erreur lors de la validation du code promo: {str(e)}")
+            return Response({
+                "valid": False,
+                "detail": _("Erreur lors de la validation du code promo.")
+            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 class BookingReviewViewSet(viewsets.ModelViewSet):
     """
