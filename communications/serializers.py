@@ -16,15 +16,36 @@ class MessageSerializer(serializers.ModelSerializer):
     
     sender_details = UserSerializer(source='sender', read_only=True)
     is_read = serializers.SerializerMethodField()
+    content = serializers.SerializerMethodField()
+    has_filtered_content = serializers.SerializerMethodField()
+    anti_disintermediation_warning = serializers.SerializerMethodField()
     
     class Meta:
         model = Message
         fields = [
             'id', 'conversation', 'sender', 'sender_details', 
             'content', 'message_type', 'attachment', 
-            'is_read', 'created_at', 'updated_at'
+            'is_read', 'created_at', 'updated_at',
+            'has_filtered_content', 'anti_disintermediation_warning'
         ]
         read_only_fields = ['id', 'created_at', 'updated_at']
+    
+    def get_content(self, obj):
+        """Retourne le contenu approprié selon les autorisations."""
+        return obj.get_unfiltered_content()
+    
+    def get_has_filtered_content(self, obj):
+        """Indique si le message contient du contenu filtré."""
+        return obj.is_filtered and obj.masked_items
+    
+    def get_anti_disintermediation_warning(self, obj):
+        """Retourne l'avertissement si nécessaire."""
+        from .services.message_filter_service import MessageFilterService
+        
+        if obj.is_filtered and obj.masked_items:
+            if not MessageFilterService.should_reveal_contacts(obj.conversation):
+                return MessageFilterService.get_anti_disintermediation_warning()
+        return None
     
     def get_is_read(self, obj):
         """Vérifie si le message a été lu par l'utilisateur actuel."""
@@ -49,16 +70,35 @@ class MessageCreateSerializer(serializers.ModelSerializer):
         return value
     
     def create(self, validated_data):
-        """Crée un message et l'associe à l'utilisateur actuel."""
+        """Crée un message avec filtrage automatique du contenu."""
+        from .services.message_filter_service import MessageFilterService
+        
         sender = self.context.get('request').user
         conversation = validated_data.get('conversation')
+        original_content = validated_data.get('content')
         
+        # Vérifier si on doit révéler les contacts
+        booking_confirmed = MessageFilterService.should_reveal_contacts(conversation)
+        
+        # Appliquer le filtrage si nécessaire
+        if not booking_confirmed:
+            filtered_content, masked_items = MessageFilterService.filter_message_content(
+                original_content, booking_confirmed
+            )
+        else:
+            filtered_content = original_content
+            masked_items = []
+        
+        # Créer le message avec le contenu filtré
         message = Message.objects.create(
             conversation=conversation,
             sender=sender,
-            content=validated_data.get('content'),
+            content=filtered_content,
+            original_content=original_content,
             message_type=validated_data.get('message_type', 'text'),
-            attachment=validated_data.get('attachment')
+            attachment=validated_data.get('attachment'),
+            is_filtered=bool(masked_items),
+            masked_items=masked_items
         )
         
         # Mettre à jour la date de dernière mise à jour de la conversation

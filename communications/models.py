@@ -7,6 +7,8 @@ from django.utils.translation import gettext_lazy as _
 from django.contrib.auth import get_user_model
 from django.utils import timezone
 from properties.models import Property
+import re
+from typing import Tuple, List
 
 User = get_user_model()
 
@@ -97,6 +99,11 @@ class Message(models.Model):
     
     created_at = models.DateTimeField(_('date d\'envoi'), auto_now_add=True)
     updated_at = models.DateTimeField(_('date de dernière mise à jour'), auto_now=True)
+
+    # Nouveaux champs pour le filtrage
+    original_content = models.TextField(_('contenu original'), blank=True)
+    is_filtered = models.BooleanField(_('contenu filtré'), default=False)
+    masked_items = models.JSONField(_('éléments masqués'), default=list, blank=True)
     
     class Meta:
         verbose_name = _('message')
@@ -118,6 +125,74 @@ class Message(models.Model):
         Vérifie si le message a été lu par un utilisateur donné.
         """
         return self.read_by.filter(id=user.id).exists()
+    
+    def get_unfiltered_content(self):
+        """
+        Retourne le contenu non filtré si autorisé.
+        """
+        from .services.message_filter_service import MessageFilterService
+        
+        if MessageFilterService.should_reveal_contacts(self.conversation):
+            return self.original_content or self.content
+        return self.content
+class MessageFilterService:
+    """Service temporaire pour filtrage - à déplacer plus tard."""
+    
+    @classmethod
+    def filter_message_content(cls, content: str, booking_confirmed: bool = False) -> Tuple[str, List[str]]:
+        if booking_confirmed:
+            return content, []
+        
+        filtered_content = content
+        masked_items = []
+        
+        # Pattern simple pour les numéros camerounais
+        phone_pattern = r'\b[69]\d{8}\b'
+        if re.search(phone_pattern, filtered_content):
+            filtered_content = re.sub(phone_pattern, '[Numéro masqué]', filtered_content)
+            masked_items.append('phone')
+        
+        return filtered_content, masked_items
+    
+    @classmethod
+    def should_reveal_contacts(cls, conversation) -> bool:
+        if not conversation.property:
+            return False
+        
+        from bookings.models import Booking
+        return Booking.objects.filter(
+            property=conversation.property,
+            tenant__in=conversation.participants.all(),
+            status='confirmed',
+            payment_status='paid'
+        ).exists()
+
+class MessageAttempt(models.Model):
+    """
+    Modèle pour tracker les tentatives de messages bloqués.
+    """
+    REASON_CHOICES = (
+        ('fragmented_phone', 'Numéro fragmenté'),
+        ('fragmented_email', 'Email fragmenté'),
+        ('suspicious_sequence', 'Séquence suspecte'),
+        ('contact_context', 'Contexte de contact'),
+    )
+    
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    conversation = models.ForeignKey(Conversation, on_delete=models.CASCADE, related_name='blocked_attempts')
+    sender = models.ForeignKey(User, on_delete=models.CASCADE, related_name='blocked_messages')
+    original_content = models.TextField(_('contenu original'))
+    blocking_reason = models.JSONField(_('raisons du blocage'), default=list)
+    created_at = models.DateTimeField(_('date de création'), auto_now_add=True)
+    
+    class Meta:
+        verbose_name = _('tentative de message bloqué')
+        verbose_name_plural = _('tentatives de messages bloqués')
+        db_table = 'findam_message_attempts'
+        ordering = ['-created_at']
+    
+    def __str__(self):
+        return f"Message bloqué de {self.sender.email} - {self.created_at}"
 
 class Notification(models.Model):
     """

@@ -1,5 +1,4 @@
 # communications/middleware.py
-# Middleware pour les WebSockets avec gestion d'erreurs améliorée
 
 from channels.db import database_sync_to_async
 from django.contrib.auth import get_user_model

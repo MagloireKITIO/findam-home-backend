@@ -8,6 +8,7 @@ from django.contrib.auth import get_user_model
 from .models import Conversation, Message, Notification
 
 User = get_user_model()
+logger = logging.getLogger(__name__)
 
 class ChatConsumer(AsyncWebsocketConsumer):
     """
@@ -18,42 +19,55 @@ class ChatConsumer(AsyncWebsocketConsumer):
         """
         Appelé lorsqu'un client WebSocket tente de se connecter.
         """
-        self.user = self.scope["user"]
-        
-        # Vérifier que l'utilisateur est authentifié
-        if not self.user.is_authenticated:
+        try:
+            self.user = self.scope["user"]
+            logger.info(f"WebSocket connect attempt by user: {self.user}")
+            
+            # Vérifier que l'utilisateur est authentifié
+            if not self.user.is_authenticated:
+                logger.warning("WebSocket connection denied: User not authenticated")
+                await self.close()
+                return
+            
+            # Récupérer l'ID de la conversation depuis les paramètres de l'URL
+            self.conversation_id = self.scope['url_route']['kwargs']['conversation_id']
+            logger.info(f"Attempting to connect to conversation: {self.conversation_id}")
+            
+            # Vérifier que l'utilisateur a accès à cette conversation
+            if not await self.can_access_conversation(self.conversation_id, self.user.id):
+                logger.warning(f"WebSocket connection denied: User {self.user.id} cannot access conversation {self.conversation_id}")
+                await self.close()
+                return
+            
+            # Définir le nom du groupe de discussion
+            self.room_group_name = f'chat_{self.conversation_id}'
+            
+            # Rejoindre le groupe de discussion
+            await self.channel_layer.group_add(
+                self.room_group_name,
+                self.channel_name
+            )
+            
+            # Accepter la connexion WebSocket
+            await self.accept()
+            logger.info(f"WebSocket connection accepted for user {self.user.id} in conversation {self.conversation_id}")
+            
+        except Exception as e:
+            logger.error(f"Error in WebSocket connect: {e}")
             await self.close()
-            return
-        
-        # Récupérer l'ID de la conversation depuis les paramètres de l'URL
-        self.conversation_id = self.scope['url_route']['kwargs']['conversation_id']
-        
-        # Vérifier que l'utilisateur a accès à cette conversation
-        if not await self.can_access_conversation(self.conversation_id, self.user.id):
-            await self.close()
-            return
-        
-        # Définir le nom du groupe de discussion
-        self.room_group_name = f'chat_{self.conversation_id}'
-        
-        # Rejoindre le groupe de discussion
-        await self.channel_layer.group_add(
-            self.room_group_name,
-            self.channel_name
-        )
-        
-        # Accepter la connexion WebSocket
-        await self.accept()
     
     async def disconnect(self, close_code):
         """
         Appelé lorsque le client WebSocket se déconnecte.
         """
+        logger.info(f"WebSocket disconnected with code: {close_code}")
+        
         # Quitter le groupe de discussion
-        await self.channel_layer.group_discard(
-            self.room_group_name,
-            self.channel_name
-        )
+        if hasattr(self, 'room_group_name'):
+            await self.channel_layer.group_discard(
+                self.room_group_name,
+                self.channel_name
+            )
     
     async def receive(self, text_data):
         """
@@ -159,15 +173,37 @@ class ChatConsumer(AsyncWebsocketConsumer):
     @database_sync_to_async
     def save_message(self, content):
         """
-        Sauvegarde un message dans la base de données.
+        Sauvegarde un message dans la base de données avec filtrage.
         """
+        from .services.message_filter_service import MessageFilterService
+        
         conversation = Conversation.objects.get(id=self.conversation_id)
+        
+        # Vérifier si on doit révéler les contacts
+        booking_confirmed = MessageFilterService.should_reveal_contacts(conversation)
+        
+        # Appliquer le filtrage si nécessaire
+        if not booking_confirmed:
+            filtered_content, masked_items = MessageFilterService.filter_message_content(
+                content, booking_confirmed
+            )
+        else:
+            filtered_content = content
+            masked_items = []
+        
+        # Créer le message avec le contenu filtré
         message = Message.objects.create(
             conversation=conversation,
             sender=self.user,
-            content=content,
-            message_type='text'
+            content=filtered_content,
+            original_content=content,
+            message_type='text',
+            is_filtered=bool(masked_items),
+            masked_items=masked_items
         )
+        
+        # Marquer le message comme venant du WebSocket pour éviter double traitement
+        message._from_websocket = True
         
         # Mettre à jour la date de dernière mise à jour de la conversation
         conversation.updated_at = message.created_at

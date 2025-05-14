@@ -114,6 +114,40 @@ class ConversationViewSet(viewsets.ModelViewSet):
         return Response(
             ConversationSerializer(conversation, context={'request': request}).data
         )
+    @action(detail=True, methods=['get'])
+    def reveal_contacts(self, request, pk=None):
+        """
+        Révèle les informations de contact si les conditions sont remplies.
+        GET /api/v1/communications/conversations/{id}/reveal_contacts/
+        """
+        from .services.message_filter_service import MessageFilterService
+        
+        conversation = self.get_object()
+        
+        # Vérifier si l'utilisateur peut voir les contacts
+        if not MessageFilterService.should_reveal_contacts(conversation):
+            return Response({
+                "detail": "Les contacts ne sont pas encore disponibles. "
+                        "Confirmez votre réservation pour accéder aux coordonnées."
+            }, status=status.HTTP_403_FORBIDDEN)
+        
+        # Récupérer les participants avec informations complètes
+        participants_data = []
+        for participant in conversation.participants.exclude(id=request.user.id):
+            from accounts.services.profile_filter_service import ProfileFilterService
+            
+            profile_data = ProfileFilterService.filter_user_profile(
+                user=participant,
+                requesting_user=request.user,
+                has_confirmed_booking=True
+            )
+            participants_data.append(profile_data)
+        
+        return Response({
+            "contacts_revealed": True,
+            "participants": participants_data,
+            "message": "Contacts révélés suite à une réservation confirmée."
+        })
 
 
 class MessageViewSet(viewsets.ModelViewSet):
