@@ -1,13 +1,16 @@
 # communications/middleware.py
-# Middleware pour les WebSockets
+# Middleware pour les WebSockets avec gestion d'erreurs améliorée
 
 from channels.db import database_sync_to_async
 from django.contrib.auth import get_user_model
 from django.contrib.auth.models import AnonymousUser
 from rest_framework_simplejwt.tokens import AccessToken
 from rest_framework_simplejwt.exceptions import InvalidToken, TokenError
+from urllib.parse import parse_qs
+import logging
 
 User = get_user_model()
+logger = logging.getLogger(__name__)
 
 @database_sync_to_async
 def get_user(user_id):
@@ -30,9 +33,10 @@ class TokenAuthMiddleware:
     async def __call__(self, scope, receive, send):
         # Récupérer le token JWT depuis les paramètres de la requête
         query_string = scope.get('query_string', b'').decode()
-        params = dict(q.split('=') for q in query_string.split('&') if q)
+        query_params = parse_qs(query_string)
         
-        token = params.get('token', None)
+        # Extraire le token du query string
+        token = query_params.get('token', [None])[0]
         
         if token:
             try:
@@ -42,9 +46,12 @@ class TokenAuthMiddleware:
                 
                 # Récupérer l'utilisateur
                 scope['user'] = await get_user(user_id)
-            except (InvalidToken, TokenError):
+                logger.info(f"WebSocket authenticated for user: {user_id}")
+            except (InvalidToken, TokenError, TypeError) as e:
+                logger.warning(f"WebSocket authentication failed: {e}")
                 scope['user'] = AnonymousUser()
         else:
+            logger.warning("No token provided for WebSocket authentication")
             scope['user'] = AnonymousUser()
         
         return await self.app(scope, receive, send)

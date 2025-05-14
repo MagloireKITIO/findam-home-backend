@@ -11,6 +11,7 @@ from django.utils import timezone
 from django.shortcuts import get_object_or_404
 from payments.utils import NotchPayUtils, PaymentStatus
 from payments.services.notchpay_service import NotchPayService
+import logging
 
 from .models import Profile, OwnerSubscription
 from .serializers import (
@@ -26,8 +27,10 @@ from .serializers import (
 )
 from .permissions import IsOwnerOrReadOnly, IsOwnerOfProfile, IsAdminUser
 
-User = get_user_model()
 
+
+User = get_user_model()
+logger = logging.getLogger(__name__)
 class UserRegistrationView(generics.CreateAPIView):
     """Vue pour l'inscription des utilisateurs."""
     

@@ -1,0 +1,365 @@
+<!-- templates/bookings/receipt_template.html -->
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+   <meta charset="UTF-8">
+   <meta name="viewport" content="width=device-width, initial-scale=1.0">
+   <title>Facture - {{ invoice_number }}</title>
+   <style>
+       @page {
+           size: A4;
+           margin: 1.5cm;
+       }
+       
+       body {
+           font-family: 'Arial', sans-serif;
+           margin: 0;
+           padding: 0;
+           color: #1f2937;
+           font-size: 12px;
+           line-height: 1.5;
+       }
+       
+       .header {
+           background: linear-gradient(135deg, #3b82f6 0%, #1d4ed8 100%);
+           color: white;
+           padding: 1.5rem;
+           border-radius: 12px;
+           margin-bottom: 1.5rem;
+           display: flex;
+           justify-content: space-between;
+           align-items: center;
+       }
+       
+       .company-name {
+           font-size: 2.5rem;
+           font-weight: 700;
+           margin: 0;
+           letter-spacing: -0.025em;
+       }
+       
+       .company-subtitle {
+           font-size: 0.9rem;
+           opacity: 0.9;
+           margin-top: 0.25rem;
+       }
+       
+       .invoice-badge {
+           background: rgba(255, 255, 255, 0.2);
+           padding: 1rem;
+           border-radius: 8px;
+           text-align: right;
+           backdrop-filter: blur(10px);
+       }
+       
+       .invoice-number {
+           font-size: 1.5rem;
+           font-weight: 700;
+           margin: 0;
+       }
+       
+       .details-container {
+           display: flex;
+           gap: 1.5rem;
+           margin-bottom: 1.5rem;
+       }
+       
+       .info-card {
+           flex: 1;
+           background: #f8fafc;
+           border: 1px solid #e2e8f0;
+           border-radius: 8px;
+           padding: 1rem;
+       }
+       
+       .info-card h3 {
+           color: #3b82f6;
+           font-size: 1rem;
+           font-weight: 600;
+           margin: 0 0 0.75rem 0;
+           border-bottom: 2px solid #3b82f6;
+           padding-bottom: 0.5rem;
+       }
+       
+       .info-row {
+           display: flex;
+           justify-content: space-between;
+           margin-bottom: 0.5rem;
+           padding: 0.25rem 0;
+       }
+       
+       .info-label {
+           color: #6b7280;
+           font-weight: 500;
+       }
+       
+       .info-value {
+           font-weight: 600;
+           color: #111827;
+       }
+       
+       .booking-visual {
+           background: white;
+           border: 1px solid #e2e8f0;
+           border-radius: 8px;
+           padding: 1rem;
+           margin-bottom: 1.5rem;
+           text-align: center;
+       }
+       
+       .property-name {
+           font-size: 1.25rem;
+           font-weight: 700;
+           color: #1f2937;
+           margin-bottom: 0.5rem;
+       }
+       
+       .booking-dates {
+           display: flex;
+           justify-content: center;
+           align-items: center;
+           gap: 1rem;
+           margin: 1rem 0;
+       }
+       
+       .date-box {
+           background: #3b82f6;
+           color: white;
+           padding: 0.75rem;
+           border-radius: 8px;
+           text-align: center;
+           flex: 1;
+           max-width: 120px;
+       }
+       
+       .date-label {
+           font-size: 0.75rem;
+           opacity: 0.9;
+       }
+       
+       .date-value {
+           font-weight: 700;
+           font-size: 1rem;
+       }
+       
+       .arrow {
+           font-size: 1.5rem;
+           color: #6b7280;
+       }
+       
+       .price-table {
+           width: 100%;
+           border-collapse: collapse;
+           background: white;
+           border-radius: 8px;
+           overflow: hidden;
+           box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+           margin-bottom: 1rem;
+       }
+       
+       .price-table th {
+           background: #f1f5f9;
+           color: #475569;
+           font-weight: 600;
+           padding: 0.75rem;
+           text-align: left;
+           font-size: 0.875rem;
+       }
+       
+       .price-table td {
+           padding: 0.75rem;
+           border-bottom: 1px solid #f1f5f9;
+       }
+       
+       .price-table tr:last-child td {
+           border-bottom: none;
+       }
+       
+       .price-amount {
+           text-align: right;
+           font-weight: 600;
+       }
+       
+       .discount-row {
+           color: #16a34a;
+       }
+       
+       .total-section {
+           background: linear-gradient(135deg, #1e293b 0%, #334155 100%);
+           color: white;
+           padding: 1rem;
+           border-radius: 8px;
+           margin-bottom: 1rem;
+       }
+       
+       .total-row {
+           display: flex;
+           justify-content: space-between;
+           align-items: center;
+       }
+       
+       .total-label {
+           font-size: 1.25rem;
+           font-weight: 700;
+       }
+       
+       .total-amount {
+           font-size: 2rem;
+           font-weight: 700;
+       }
+       
+       .payment-badge {
+           background: linear-gradient(135deg, #16a34a 0%, #22c55e 100%);
+           color: white;
+           padding: 1rem;
+           border-radius: 8px;
+           text-align: center;
+           margin-bottom: 1rem;
+       }
+       
+       .payment-status {
+           font-size: 1.125rem;
+           font-weight: 700;
+           margin: 0;
+       }
+       
+       .payment-date {
+           opacity: 0.9;
+           margin-top: 0.25rem;
+       }
+       
+       .footer {
+           text-align: center;
+           color: #6b7280;
+           font-size: 0.75rem;
+           border-top: 1px solid #e5e7eb;
+           padding-top: 1rem;
+           margin-top: 1rem;
+       }
+       
+       .footer p {
+           margin: 0.25rem 0;
+       }
+       
+       .meta-info {
+           display: flex;
+           justify-content: space-between;
+           margin-top: 0.5rem;
+           font-size: 0.7rem;
+       }
+   </style>
+</head>
+<body>
+   <!-- En-tête moderne -->
+   <div class="header">
+       <div>
+           <h1 class="company-name">{{ company_name }}</h1>
+           <div class="company-subtitle">Plateforme de réservation</div>
+       </div>
+       <div class="invoice-badge">
+           <div class="invoice-number">{{ invoice_number }}</div>
+           <div>{{ invoice_date }}</div>
+       </div>
+   </div>
+   
+   <!-- Informations compactes -->
+   <div class="details-container">
+       <div class="info-card">
+           <h3>Client</h3>
+           <div class="info-row">
+               <span class="info-label">Nom</span>
+               <span class="info-value">{{ booking.tenant.get_full_name }}</span>
+           </div>
+           <div class="info-row">
+               <span class="info-label">Email</span>
+               <span class="info-value">{{ booking.tenant.email }}</span>
+           </div>
+       </div>
+       
+       <div class="info-card">
+           <h3>Réservation</h3>
+           <div class="info-row">
+               <span class="info-label">Voyageurs</span>
+               <span class="info-value">{{ booking.guests_count }}</span>
+           </div>
+           <div class="info-row">
+               <span class="info-label">Durée</span>
+               <span class="info-value">{{ nights }} nuit{{ nights|pluralize }}</span>
+           </div>
+       </div>
+   </div>
+   
+   <!-- Visualisation de la réservation -->
+   <div class="booking-visual">
+       <div class="property-name">{{ booking.property.title }}</div>
+       <div style="color: #6b7280; margin-bottom: 1rem;">{{ booking.property.city.name }}, {{ booking.property.neighborhood.name }}</div>
+       
+       <div class="booking-dates">
+           <div class="date-box">
+               <div class="date-label">ARRIVÉE</div>
+               <div class="date-value">{{ booking.check_in_date|date:"d/m" }}</div>
+           </div>
+           <div class="arrow">→</div>
+           <div class="date-box">
+               <div class="date-label">DÉPART</div>
+               <div class="date-value">{{ booking.check_out_date|date:"d/m" }}</div>
+           </div>
+       </div>
+   </div>
+   
+   <!-- Détail des prix compact -->
+   <table class="price-table">
+       <thead>
+           <tr>
+               <th>Description</th>
+               <th style="text-align: right;">Montant</th>
+           </tr>
+       </thead>
+       <tbody>
+           <tr>
+               <td>Logement ({{ nights }} × {{ price_per_night|floatformat:0 }} FCFA)</td>
+               <td class="price-amount">{{ booking.base_price|floatformat:0 }} FCFA</td>
+           </tr>
+           {% if booking.cleaning_fee %}
+           <tr>
+               <td>Frais de ménage</td>
+               <td class="price-amount">{{ booking.cleaning_fee|floatformat:0 }} FCFA</td>
+           </tr>
+           {% endif %}
+           <tr>
+               <td>Frais de service (7%)</td>
+               <td class="price-amount">{{ booking.service_fee|floatformat:0 }} FCFA</td>
+           </tr>
+           {% if booking.discount_amount %}
+           <tr class="discount-row">
+               <td>Réduction{% if booking.promo_code %} ({{ booking.promo_code.code }}){% endif %}</td>
+               <td class="price-amount">-{{ booking.discount_amount|floatformat:0 }} FCFA</td>
+           </tr>
+           {% endif %}
+       </tbody>
+   </table>
+   
+   <!-- Total -->
+   <div class="total-section">
+       <div class="total-row">
+           <span class="total-label">TOTAL</span>
+           <span class="total-amount">{{ booking.total_price|floatformat:0 }} FCFA</span>
+       </div>
+   </div>
+   
+   <!-- Statut de paiement -->
+   <div class="payment-badge">
+       <div class="payment-status">✓ PAIEMENT CONFIRMÉ</div>
+       <div class="payment-date">{{ booking.transactions.last.created_at|date:"d/m/Y à H:i" }}</div>
+   </div>
+   
+   <!-- Pied de page minimaliste -->
+   <div class="footer">
+       <p>Merci d'avoir choisi {{ company_name }}</p>
+       <div class="meta-info">
+           <span>ID: {{ booking.id }}</span>
+           <span>Généré le {{ "now"|date:"d/m/Y à H:i" }}</span>
+       </div>
+   </div>
+</body>
+</html>

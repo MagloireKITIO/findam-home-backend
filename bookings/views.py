@@ -25,6 +25,9 @@ from .permissions import (
     CanLeaveReview
 )
 from .filters import BookingFilter
+import logging
+
+logger = logging.getLogger('findam')
 
 class BookingViewSet(viewsets.ModelViewSet):
     """
@@ -891,6 +894,79 @@ class BookingViewSet(viewsets.ModelViewSet):
         # Sinon, comportement standard
         return super().list(request, *args, **kwargs)
     
+    @action(detail=True, methods=['get'])
+    def download_receipt(self, request, pk=None):
+        """
+        Génère et télécharge la facture/reçu d'une réservation au format PDF.
+        GET /api/v1/bookings/{id}/download_receipt/
+        """
+        from django.http import HttpResponse
+        from django.template.loader import get_template
+        from xhtml2pdf import pisa
+        from io import BytesIO
+        
+        booking = self.get_object()
+        
+        # Vérifier que l'utilisateur est autorisé (propriétaire, locataire ou admin)
+        if not (request.user.is_staff or request.user == booking.tenant or request.user == booking.property.owner):
+            return Response({
+                "detail": _("Vous n'êtes pas autorisé à télécharger cette facture.")
+            }, status=status.HTTP_403_FORBIDDEN)
+        
+        # Vérifier que la réservation est payée
+        if booking.payment_status != 'paid':
+            return Response({
+                "detail": _("La facture n'est disponible que pour les réservations payées.")
+            }, status=status.HTTP_400_BAD_REQUEST)
+        
+        try:
+            # Calculer le nombre de nuits
+            nights = (booking.check_out_date - booking.check_in_date).days
+            
+            # Préparer le contexte pour le template
+            context = {
+                'booking': booking,
+                'nights': nights,
+                'company_name': 'Findam',
+                'company_address': 'Douala, Cameroun',
+                'company_phone': '+237 6XX XXX XXX',
+                'company_email': 'support@findam.com',
+                'invoice_date': booking.created_at.strftime('%d/%m/%Y'),
+                'invoice_number': f'INV-{booking.id}',
+            }
+            
+            # Calculer le prix par nuit si nécessaire
+            if hasattr(booking, 'price_per_night') and booking.price_per_night:
+                context['price_per_night'] = booking.price_per_night
+            else:
+                context['price_per_night'] = booking.base_price / nights if nights > 0 else booking.base_price
+            
+            # Charger le template HTML
+            template = get_template('bookings/receipt_template.html')
+            html = template.render(context)
+            
+            # Créer le PDF
+            pdf_buffer = BytesIO()
+            pisa_status = pisa.CreatePDF(html, dest=pdf_buffer)
+            
+            if pisa_status.err:
+                return Response({
+                    "detail": _("Erreur lors de la génération du PDF.")
+                }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+            
+            # Retourner le PDF comme réponse
+            pdf_buffer.seek(0)
+            response = HttpResponse(pdf_buffer.read(), content_type='application/pdf')
+            response['Content-Disposition'] = f'attachment; filename="facture-{booking.id}.pdf"'
+            
+            return response
+            
+        except Exception as e:
+            logger.exception(f"Erreur lors de la génération de la facture pour la réservation {booking.id}: {str(e)}")
+            return Response({
+                "detail": _("Une erreur est survenue lors de la génération de la facture.")
+            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+    
 class PromoCodeViewSet(viewsets.ModelViewSet):
     """
     ViewSet pour gérer les codes promotionnels.
@@ -1049,3 +1125,4 @@ class BookingReviewViewSet(viewsets.ModelViewSet):
         
         serializer = BookingReviewSerializer(reviews, many=True, context={'request': request})
         return Response(serializer.data)
+        

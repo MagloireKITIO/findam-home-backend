@@ -1,3 +1,4 @@
+# findam/asgi.py
 """
 ASGI config for findam project.
 
@@ -24,13 +25,11 @@ application = ProtocolTypeRouter({
     # Django gère les requêtes HTTP
     "http": django_asgi_app,
     
-    # WebSocket avec validation d'origine, authentification middleware et notre middleware JWT
+    # Configuration WebSocket avec middleware d'authentification JWT personnalisé
     "websocket": AllowedHostsOriginValidator(
         TokenAuthMiddleware(
-            AuthMiddlewareStack(
-                URLRouter(
-                    communications.routing.websocket_urlpatterns
-                )
+            URLRouter(
+                communications.routing.websocket_urlpatterns
             )
         )
     ),
