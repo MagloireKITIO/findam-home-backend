@@ -22,11 +22,27 @@ class AmenitySerializer(serializers.ModelSerializer):
         fields = ['id', 'name', 'icon', 'category']
 
 class CitySerializer(serializers.ModelSerializer):
-    """Sérialiseur pour les villes."""
+    """Sérialiseur pour les villes avec image."""
+    
+    property_count = serializers.SerializerMethodField()
+    image_url = serializers.SerializerMethodField()
     
     class Meta:
         model = City
-        fields = ['id', 'name']
+        fields = ['id', 'name', 'description', 'image', 'image_url', 'is_featured', 'property_count']
+    
+    def get_property_count(self, obj):
+        """Retourne le nombre de propriétés dans cette ville."""
+        return obj.properties.filter(is_published=True, is_verified=True).count()
+    
+    def get_image_url(self, obj):
+        """Retourne l'URL complète de l'image."""
+        if obj.image:
+            request = self.context.get('request')
+            if request:
+                return request.build_absolute_uri(obj.image.url)
+            return obj.image.url
+        return None
 
 class NeighborhoodSerializer(serializers.ModelSerializer):
     """Sérialiseur pour les quartiers."""

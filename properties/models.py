@@ -32,6 +32,11 @@ class City(models.Model):
     Modèle pour les villes disponibles au Cameroun.
     """
     name = models.CharField(_('nom'), max_length=100)
+    image = models.ImageField(_('image'), upload_to='cities/', null=True, blank=True)
+    description = models.TextField(_('description'), blank=True, null=True)
+    is_featured = models.BooleanField(_('ville en vedette'), default=False)
+    created_at = models.DateTimeField(_('date de création'), auto_now_add=True)
+    updated_at = models.DateTimeField(_('date de mise à jour'), auto_now=True)
     
     class Meta:
         verbose_name = _('ville')

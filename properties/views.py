@@ -54,12 +54,23 @@ class CityViewSet(viewsets.ReadOnlyModelViewSet):
     ViewSet pour afficher les villes disponibles.
     GET /api/v1/properties/cities/ - Liste toutes les villes
     GET /api/v1/properties/cities/{id}/ - Détail d'une ville
+    GET /api/v1/properties/cities/featured/ - Villes en vedette
     """
     queryset = City.objects.all()
     serializer_class = CitySerializer
     permission_classes = [permissions.AllowAny]
     filter_backends = [filters.SearchFilter]
     search_fields = ['name']
+    
+    @action(detail=False, methods=['get'])
+    def featured(self, request):
+        """
+        Retourne les villes en vedette.
+        GET /api/v1/properties/cities/featured/
+        """
+        featured_cities = City.objects.filter(is_featured=True).order_by('name')
+        serializer = self.get_serializer(featured_cities, many=True)
+        return Response(serializer.data)
 
 class NeighborhoodViewSet(viewsets.ReadOnlyModelViewSet):
     """

@@ -22,8 +22,43 @@ class NeighborhoodInline(admin.TabularInline):
 @admin.register(City)
 class CityAdmin(admin.ModelAdmin):
     """Configuration de l'admin pour le modèle City."""
-    list_display = ('name',)
-    search_fields = ('name',)
+    list_display = ('name', 'image_preview', 'is_featured', 'property_count', 'created_at')
+    list_filter = ('is_featured', 'created_at')
+    search_fields = ('name', 'description')
+    readonly_fields = ('image_preview', 'property_count', 'created_at', 'updated_at')
+    
+    fieldsets = (
+        (_('Informations de base'), {
+            'fields': ('name', 'description')
+        }),
+        (_('Image'), {
+            'fields': ('image', 'image_preview')
+        }),
+        (_('Options'), {
+            'fields': ('is_featured',)
+        }),
+        (_('Métadonnées'), {
+            'fields': ('created_at', 'updated_at')
+        }),
+    )
+    
+    def image_preview(self, obj):
+        """Affiche une prévisualisation de l'image de la ville."""
+        if obj.image:
+            return format_html(
+                '<img src="{}" width="100" height="100" style="object-fit: cover; border-radius: 8px;" />',
+                obj.image.url
+            )
+        return "Pas d'image"
+    
+    image_preview.short_description = _("Aperçu")
+    
+    def property_count(self, obj):
+        """Affiche le nombre de propriétés dans cette ville."""
+        return obj.properties.count()
+    
+    property_count.short_description = _("Nombre de logements")
+
     inlines = [NeighborhoodInline]
 
 @admin.register(Neighborhood)
