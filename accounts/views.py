@@ -53,27 +53,43 @@ class UserProfileView(generics.RetrieveUpdateAPIView):
     
     serializer_class = UserDetailSerializer
     permission_classes = [permissions.IsAuthenticated]
+    parser_classes = [MultiPartParser, FormParser]
+    queryset = User.objects.all()  # <-- Ajout nécessaire
     
     def get_object(self):
+        """Retourne toujours l'utilisateur connecté."""
         return self.request.user
     
     def update(self, request, *args, **kwargs):
         user = self.get_object()
-        user_serializer = UserSerializer(user, data=request.data, partial=True)
-        if user_serializer.is_valid():
-            user_serializer.save()
-            
-            # Mise à jour du profil
-            profile_data = request.data.get('profile', {})
-            if profile_data:
-                profile_serializer = ProfileUpdateSerializer(user.profile, data=profile_data, partial=True)
-                if profile_serializer.is_valid():
-                    profile_serializer.save()
-                else:
-                    return Response(profile_serializer.errors, status=status.HTTP_400_BAD_REQUEST)
-            
-            return Response(UserDetailSerializer(user).data)
-        return Response(user_serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+        
+        # Traitement des données utilisateur (non multipart)
+        user_data = {}
+        for field in ['first_name', 'last_name', 'phone_number']:
+            if field in request.data:
+                user_data[field] = request.data[field]
+        
+        if user_data:
+            user_serializer = UserSerializer(user, data=user_data, partial=True)
+            if user_serializer.is_valid():
+                user_serializer.save()
+            else:
+                return Response(user_serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+        
+        # Traitement des données du profil (y compris avatar)
+        profile_data = {}
+        for field in ['bio', 'birth_date', 'city', 'country', 'avatar']:
+            if field in request.data:
+                profile_data[field] = request.data[field]
+        
+        if profile_data:
+            profile_serializer = ProfileUpdateSerializer(user.profile, data=profile_data, partial=True)
+            if profile_serializer.is_valid():
+                profile_serializer.save()
+            else:
+                return Response(profile_serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+        
+        return Response(UserDetailSerializer(user).data)
 
 class PasswordChangeView(APIView):
     """Vue pour changer le mot de passe."""

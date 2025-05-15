@@ -7,6 +7,7 @@ from rest_framework import serializers
 from django.contrib.auth import get_user_model
 from django.contrib.auth.password_validation import validate_password
 from .models import Profile, OwnerSubscription
+from datetime import datetime
 
 User = get_user_model()
 
@@ -71,6 +72,24 @@ class PasswordChangeSerializer(serializers.Serializer):
 
 class ProfileUpdateSerializer(serializers.ModelSerializer):
     """Sérialiseur pour la mise à jour du profil utilisateur."""
+    
+    birth_date = serializers.DateField(
+        required=False, 
+        allow_null=True,
+        input_formats=['%Y-%m-%d', '%d/%m/%Y', '%d-%m-%Y']  # Accepter plusieurs formats
+    )
+    
+    def validate_avatar(self, value):
+        if value:
+            # Vérifier la taille (5MB max par exemple)
+            if value.size > 5 * 1024 * 1024:
+                raise serializers.ValidationError("L'image ne doit pas dépasser 5MB")
+            
+            # Vérifier le format
+            if not value.content_type.startswith('image/'):
+                raise serializers.ValidationError("Le fichier doit être une image")
+                
+        return value
     
     class Meta:
         model = Profile
