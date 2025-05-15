@@ -966,6 +966,130 @@ class BookingViewSet(viewsets.ModelViewSet):
             return Response({
                 "detail": _("Une erreur est survenue lors de la génération de la facture.")
             }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+        
+    @action(detail=False, methods=['get'])
+    def calendar_data(self, request):
+        """
+        Récupère les données de réservation pour l'affichage du calendrier côté locataire.
+        GET /api/v1/bookings/bookings/calendar_data/
+        """
+        user = request.user
+        
+        # Récupérer les paramètres de la requête
+        start_date = request.query_params.get('start_date')
+        end_date = request.query_params.get('end_date')
+        filter_type = request.query_params.get('filter', 'all')
+        
+        # Construire la requête de base pour les réservations du locataire
+        queryset = Booking.objects.filter(tenant=user)
+        
+        # Appliquer les filtres de date si fournis
+        if start_date:
+            try:
+                start_date = datetime.strptime(start_date, '%Y-%m-%d').date()
+                queryset = queryset.filter(check_out_date__gte=start_date)
+            except ValueError:
+                return Response({
+                    "error": "Format de date invalide. Utilisez YYYY-MM-DD."
+                }, status=status.HTTP_400_BAD_REQUEST)
+        
+        if end_date:
+            try:
+                end_date = datetime.strptime(end_date, '%Y-%m-%d').date()
+                queryset = queryset.filter(check_in_date__lte=end_date)
+            except ValueError:
+                return Response({
+                    "error": "Format de date invalide. Utilisez YYYY-MM-DD."
+                }, status=status.HTTP_400_BAD_REQUEST)
+        
+        # Appliquer les filtres de statut
+        if filter_type == 'upcoming':
+            queryset = queryset.filter(check_in_date__gte=timezone.now().date())
+        elif filter_type == 'past':
+            queryset = queryset.filter(check_out_date__lt=timezone.now().date())
+        elif filter_type == 'confirmed':
+            queryset = queryset.filter(status='confirmed')
+        elif filter_type == 'pending':
+            queryset = queryset.filter(status='pending')
+        
+        # Sélectionner les champs nécessaires pour optimiser la requête
+        queryset = queryset.select_related(
+            'property', 'property__city', 'property__neighborhood'
+        ).prefetch_related('property__images')
+        
+        # Sérialiser les données
+        serializer = BookingListSerializer(queryset, many=True, context={'request': request})
+        
+        return Response({
+            'bookings': serializer.data,
+            'total_count': queryset.count()
+        })
+    
+    @action(detail=False, methods=['get'])
+    def monthly_summary(self, request):
+        """
+        Récupère un résumé mensuel des réservations pour le locataire.
+        GET /api/v1/bookings/bookings/monthly_summary/
+        """
+        user = request.user
+        
+        # Récupérer le mois et l'année depuis les paramètres
+        year = request.query_params.get('year', timezone.now().year)
+        month = request.query_params.get('month', timezone.now().month)
+        
+        try:
+            year = int(year)
+            month = int(month)
+        except ValueError:
+            return Response({
+                "error": "Année et mois doivent être des entiers."
+            }, status=status.HTTP_400_BAD_REQUEST)
+        
+        # Calculer les dates de début et fin du mois
+        start_date = datetime(year, month, 1).date()
+        if month == 12:
+            end_date = datetime(year + 1, 1, 1).date() - timedelta(days=1)
+        else:
+            end_date = datetime(year, month + 1, 1).date() - timedelta(days=1)
+        
+        # Récupérer les réservations du mois
+        bookings = Booking.objects.filter(
+            tenant=user,
+            check_in_date__lte=end_date,
+            check_out_date__gte=start_date
+        ).select_related('property')
+        
+        # Calculer les statistiques
+        total_bookings = bookings.count()
+        confirmed_bookings = bookings.filter(status='confirmed').count()
+        pending_bookings = bookings.filter(status='pending').count()
+        completed_bookings = bookings.filter(status='completed').count()
+        cancelled_bookings = bookings.filter(status='cancelled').count()
+        
+        # Calculer le montant total dépensé
+        total_spent = sum(
+            booking.total_price for booking in bookings 
+            if booking.payment_status == 'paid'
+        )
+        
+        # Calculer le nombre de nuits totales
+        total_nights = 0
+        for booking in bookings:
+            nights = (booking.check_out_date - booking.check_in_date).days
+            total_nights += nights
+        
+        return Response({
+            'year': year,
+            'month': month,
+            'total_bookings': total_bookings,
+            'confirmed_bookings': confirmed_bookings,
+            'pending_bookings': pending_bookings,
+            'completed_bookings': completed_bookings,
+            'cancelled_bookings': cancelled_bookings,
+            'total_spent': float(total_spent),
+            'total_nights': total_nights,
+            'bookings': BookingListSerializer(bookings, many=True, context={'request': request}).data
+        })
     
 class PromoCodeViewSet(viewsets.ModelViewSet):
     """
