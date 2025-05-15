@@ -193,12 +193,24 @@ class MessageViewSet(viewsets.ModelViewSet):
     @action(detail=True, methods=['post'])
     def mark_as_read(self, request, pk=None):
         """
-        Marque un message comme lu.
-        POST /api/v1/communications/messages/{id}/mark_as_read/
+        Marque tous les messages non lus d'une conversation comme lus.
+        POST /api/v1/communications/conversations/{id}/mark_as_read/
         """
-        message = self.get_object()
-        message.mark_as_read(request.user)
-        return Response({"detail": "Message marqué comme lu."})
+        conversation = self.get_object()
+        conversation.mark_as_read(request.user)
+        
+        # Marquer également les notifications liées à cette conversation comme lues
+        Notification.objects.filter(
+            recipient=request.user,
+            related_conversation=conversation,
+            is_read=False
+        ).update(is_read=True)
+        
+        # Invalider le cache des notifications
+        from .services import notificationCache
+        notificationCache.invalidateAllCache()
+        
+        return Response({"detail": "Messages marqués comme lus."})
     
     @action(detail=False, methods=['get'])
     def by_conversation(self, request):

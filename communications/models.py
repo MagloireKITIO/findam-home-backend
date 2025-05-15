@@ -135,6 +135,18 @@ class Message(models.Model):
         if MessageFilterService.should_reveal_contacts(self.conversation):
             return self.original_content or self.content
         return self.content
+
+    def get_anti_disintermediation_warning(self):
+        """
+        Retourne l'avertissement anti-désintermédiation si nécessaire.
+        """
+        from .services.message_filter_service import MessageFilterService
+        
+        if self.is_filtered and self.masked_items:
+            if not MessageFilterService.should_reveal_contacts(self.conversation):
+                return MessageFilterService.get_anti_disintermediation_warning()
+        return None
+
 class MessageFilterService:
     """Service temporaire pour filtrage - à déplacer plus tard."""
     

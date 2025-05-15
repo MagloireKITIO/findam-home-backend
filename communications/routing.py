@@ -1,13 +1,8 @@
 # communications/routing.py
-# Configuration des routes WebSocket pour l'application communications
-
-from django.urls import path
-from .consumers import ChatConsumer, NotificationConsumer
+from django.urls import re_path
+from . import consumers
 
 websocket_urlpatterns = [
-    # Route pour les conversations
-    path('ws/chat/<uuid:conversation_id>/', ChatConsumer.as_asgi()),
-    
-    # Route pour les notifications
-    path('ws/notifications/', NotificationConsumer.as_asgi()),
+    re_path(r'ws/chat/(?P<conversation_id>[0-9a-f-]+)/$', consumers.ChatConsumer.as_asgi()),
+    re_path(r'ws/notifications/$', consumers.NotificationConsumer.as_asgi()),
 ]

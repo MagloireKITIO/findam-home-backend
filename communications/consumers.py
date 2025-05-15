@@ -20,13 +20,12 @@ class ChatConsumer(AsyncWebsocketConsumer):
         Appelé lorsqu'un client WebSocket tente de se connecter.
         """
         try:
-            self.user = self.scope["user"]
-            logger.info(f"WebSocket connect attempt by user: {self.user}")
+            # Récupérer l'utilisateur depuis le scope
+            self.user = self.scope.get("user")
             
-            # Vérifier que l'utilisateur est authentifié
-            if not self.user.is_authenticated:
+            if not self.user or not self.user.is_authenticated:
                 logger.warning("WebSocket connection denied: User not authenticated")
-                await self.close()
+                await self.close(code=4001)
                 return
             
             # Récupérer l'ID de la conversation depuis les paramètres de l'URL
@@ -34,9 +33,10 @@ class ChatConsumer(AsyncWebsocketConsumer):
             logger.info(f"Attempting to connect to conversation: {self.conversation_id}")
             
             # Vérifier que l'utilisateur a accès à cette conversation
-            if not await self.can_access_conversation(self.conversation_id, self.user.id):
+            has_access = await self.can_access_conversation(self.conversation_id, self.user.id)
+            if not has_access:
                 logger.warning(f"WebSocket connection denied: User {self.user.id} cannot access conversation {self.conversation_id}")
-                await self.close()
+                await self.close(code=4003)
                 return
             
             # Définir le nom du groupe de discussion
@@ -54,7 +54,9 @@ class ChatConsumer(AsyncWebsocketConsumer):
             
         except Exception as e:
             logger.error(f"Error in WebSocket connect: {e}")
-            await self.close()
+            await self.close(code=4000)
+    
+    
     
     async def disconnect(self, close_code):
         """
@@ -62,8 +64,19 @@ class ChatConsumer(AsyncWebsocketConsumer):
         """
         logger.info(f"WebSocket disconnected with code: {close_code}")
         
-        # Quitter le groupe de discussion
+        # Arrêter l'indicateur de frappe si actif
         if hasattr(self, 'room_group_name'):
+            await self.channel_layer.group_send(
+                self.room_group_name,
+                {
+                    'type': 'user_typing',
+                    'user_id': str(self.user.id),
+                    'user_name': self.user.get_full_name() or self.user.email,
+                    'is_typing': False
+                }
+            )
+            
+            # Quitter le groupe de discussion
             await self.channel_layer.group_discard(
                 self.room_group_name,
                 self.channel_name
@@ -73,57 +86,83 @@ class ChatConsumer(AsyncWebsocketConsumer):
         """
         Appelé lorsque le client WebSocket envoie un message.
         """
-        text_data_json = json.loads(text_data)
-        message_type = text_data_json.get('type', 'message')
-        
-        # Traiter différents types de messages
-        if message_type == 'message':
-            content = text_data_json.get('content')
+        try:
+            text_data_json = json.loads(text_data)
+            message_type = text_data_json.get('type', 'message')
             
-            # Sauvegarder le message dans la base de données
-            message = await self.save_message(content)
-            
-            # Envoyer le message au groupe de discussion
-            await self.channel_layer.group_send(
-                self.room_group_name,
-                {
-                    'type': 'chat_message',
-                    'message': {
-                        'id': str(message.id),
-                        'sender_id': str(self.user.id),
-                        'sender_name': self.user.get_full_name() or self.user.email,
-                        'content': content,
-                        'created_at': message.created_at.isoformat(),
-                        'message_type': 'text'
+            # Traiter différents types de messages
+            if message_type == 'message':
+                content = text_data_json.get('content')
+                
+                # Sauvegarder le message dans la base de données
+                message = await self.save_message(content)
+                
+                # Envoyer le message au groupe de discussion
+                await self.channel_layer.group_send(
+                    self.room_group_name,
+                    {
+                        'type': 'chat_message',
+                        'message': {
+                            'id': str(message.id),
+                            'sender_id': str(self.user.id),
+                            'sender_name': self.user.get_full_name() or self.user.email,
+                            'content': message.content,  # Utiliser le contenu filtré
+                            'created_at': message.created_at.isoformat(),
+                            'message_type': message.message_type,
+                            'sender_details': {
+                                'id': str(self.user.id),
+                                'first_name': self.user.first_name,
+                                'last_name': self.user.last_name,
+                                'email': self.user.email
+                            },
+                            'is_read': False,
+                            'has_filtered_content': message.is_filtered,
+                            'anti_disintermediation_warning': message.get_anti_disintermediation_warning() if message.is_filtered else None
+                        }
                     }
-                }
-            )
-        
-        elif message_type == 'typing':
-            # Informer les autres utilisateurs que quelqu'un est en train d'écrire
-            is_typing = text_data_json.get('is_typing', False)
+                )
+                
+                # Arrêter l'indicateur de frappe automatiquement après envoi
+                await self.channel_layer.group_send(
+                    self.room_group_name,
+                    {
+                        'type': 'user_typing',
+                        'user_id': str(self.user.id),
+                        'user_name': self.user.get_full_name() or self.user.email,
+                        'is_typing': False
+                    }
+                )
             
-            await self.channel_layer.group_send(
-                self.room_group_name,
-                {
-                    'type': 'user_typing',
-                    'user_id': str(self.user.id),
-                    'user_name': self.user.get_full_name() or self.user.email,
-                    'is_typing': is_typing
-                }
-            )
-        
-        elif message_type == 'read':
-            # Marquer les messages comme lus
-            await self.mark_messages_as_read()
+            elif message_type == 'typing':
+                # Informer les autres utilisateurs que quelqu'un est en train d'écrire
+                is_typing = text_data_json.get('is_typing', False)
+                
+                await self.channel_layer.group_send(
+                    self.room_group_name,
+                    {
+                        'type': 'user_typing',
+                        'user_id': str(self.user.id),
+                        'user_name': self.user.get_full_name() or self.user.email,
+                        'is_typing': is_typing
+                    }
+                )
             
-            await self.channel_layer.group_send(
-                self.room_group_name,
-                {
-                    'type': 'messages_read',
-                    'user_id': str(self.user.id)
-                }
-            )
+            elif message_type == 'read':
+                # Marquer les messages comme lus
+                await self.mark_messages_as_read()
+                
+                await self.channel_layer.group_send(
+                    self.room_group_name,
+                    {
+                        'type': 'messages_read',
+                        'user_id': str(self.user.id)
+                    }
+                )
+                
+        except json.JSONDecodeError:
+            logger.error("Invalid JSON received")
+        except Exception as e:
+            logger.error(f"Error processing WebSocket message: {e}")
     
     async def chat_message(self, event):
         """
@@ -141,13 +180,15 @@ class ChatConsumer(AsyncWebsocketConsumer):
         """
         Appelé lorsqu'un utilisateur est en train d'écrire.
         """
-        # Envoyer l'information au client WebSocket
-        await self.send(text_data=json.dumps({
-            'type': 'typing',
-            'user_id': event['user_id'],
-            'user_name': event['user_name'],
-            'is_typing': event['is_typing']
-        }))
+        # Ne pas renvoyer sa propre notification de frappe
+        if event['user_id'] != str(self.user.id):
+            # Envoyer l'information au client WebSocket
+            await self.send(text_data=json.dumps({
+                'type': 'typing',
+                'user_id': event['user_id'],
+                'user_name': event['user_name'],
+                'is_typing': event['is_typing']
+            }))
     
     async def messages_read(self, event):
         """
@@ -168,6 +209,10 @@ class ChatConsumer(AsyncWebsocketConsumer):
             conversation = Conversation.objects.get(id=conversation_id)
             return conversation.participants.filter(id=user_id).exists()
         except Conversation.DoesNotExist:
+            logger.error(f"Conversation {conversation_id} does not exist")
+            return False
+        except Exception as e:
+            logger.error(f"Error checking conversation access: {e}")
             return False
     
     @database_sync_to_async

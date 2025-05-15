@@ -1,36 +1,24 @@
 # findam/asgi.py
-"""
-ASGI config for findam project.
-
-It exposes the ASGI callable as a module-level variable named ``application``.
-
-For more information on this file, see
-https://docs.djangoproject.com/en/5.2/howto/deployment/asgi/
-"""
-
 import os
+import django
 from django.core.asgi import get_asgi_application
-from channels.routing import ProtocolTypeRouter, URLRouter
-from channels.auth import AuthMiddlewareStack
-from channels.security.websocket import AllowedHostsOriginValidator
-import communications.routing
-from communications.middleware import TokenAuthMiddleware
 
+# Configurer Django AVANT d'importer les modules WebSocket
 os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'findam.settings')
+django.setup()
 
-# Initialiser l'application Django ASGI
+# MAINTENANT importer les modules WebSocket
+from channels.routing import ProtocolTypeRouter, URLRouter
+from communications.middleware import TokenAuthMiddleware
+from communications.routing import websocket_urlpatterns
+
+# Application Django standard
 django_asgi_app = get_asgi_application()
 
+# Configuration complète
 application = ProtocolTypeRouter({
-    # Django gère les requêtes HTTP
     "http": django_asgi_app,
-    
-    # Configuration WebSocket avec middleware d'authentification JWT personnalisé
-    "websocket": AllowedHostsOriginValidator(
-        TokenAuthMiddleware(
-            URLRouter(
-                communications.routing.websocket_urlpatterns
-            )
-        )
+    "websocket": TokenAuthMiddleware(
+        URLRouter(websocket_urlpatterns)
     ),
 })

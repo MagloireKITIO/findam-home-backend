@@ -1,5 +1,4 @@
-# communications/middleware.py
-
+# communications/middleware.py - Version corrigée
 from channels.db import database_sync_to_async
 from django.contrib.auth import get_user_model
 from django.contrib.auth.models import AnonymousUser
@@ -46,8 +45,14 @@ class TokenAuthMiddleware:
                 # Récupérer l'utilisateur
                 scope['user'] = await get_user(user_id)
                 logger.info(f"WebSocket authenticated for user: {user_id}")
-            except (InvalidToken, TokenError, TypeError) as e:
-                logger.warning(f"WebSocket authentication failed: {e}")
+            except InvalidToken as e:
+                logger.warning(f"Invalid token for WebSocket: {e}")
+                scope['user'] = AnonymousUser()
+            except TokenError as e:
+                logger.warning(f"Token error for WebSocket: {e}")
+                scope['user'] = AnonymousUser()
+            except Exception as e:
+                logger.error(f"Unexpected error in token auth: {e}")
                 scope['user'] = AnonymousUser()
         else:
             logger.warning("No token provided for WebSocket authentication")
