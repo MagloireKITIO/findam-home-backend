@@ -12,6 +12,7 @@ from django.shortcuts import get_object_or_404
 from payments.utils import NotchPayUtils, PaymentStatus
 from payments.services.notchpay_service import NotchPayService
 import logging
+from common.permissions import IsOwnerRole
 
 from .models import Profile, OwnerSubscription
 from .serializers import (
@@ -90,6 +91,12 @@ class UserProfileView(generics.RetrieveUpdateAPIView):
                 return Response(profile_serializer.errors, status=status.HTTP_400_BAD_REQUEST)
         
         return Response(UserDetailSerializer(user).data)
+
+    def get_permissions(self):
+        """
+        Authentification requise pour accéder au profil.
+        """
+        return [permissions.IsAuthenticated()]
 
 class PasswordChangeView(APIView):
     """Vue pour changer le mot de passe."""

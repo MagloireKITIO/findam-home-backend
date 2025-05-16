@@ -7,6 +7,7 @@ from rest_framework.response import Response
 from django.db.models import Q
 from django_filters.rest_framework import DjangoFilterBackend
 from .models import Review, ReviewReply, ReportedReview
+from common.permissions import IsOwnerRole
 from .serializers import (
     ReviewSerializer,
     ReviewCreateSerializer,
@@ -29,33 +30,31 @@ class ReviewViewSet(viewsets.ModelViewSet):
     
     def get_queryset(self):
         """
-        Retourne le queryset approprié selon le contexte.
-        - Pour les requêtes en lecture seule : les avis publics
-        - Pour les autres actions : restreint aux avis de l'utilisateur ou du propriétaire des logements
+        Filtre les avis selon le rôle et les permissions.
         """
         user = self.request.user
         
         if self.action in ['list', 'retrieve'] and not user.is_authenticated:
-            # Pour les non authentifiés, uniquement les avis publics
             return Review.objects.filter(is_public=True).select_related(
                 'property', 'reviewer', 'property__owner'
             ).prefetch_related('images', 'owner_reply')
         
+        if not user.is_authenticated:
+            return Review.objects.none()
+        
         if user.is_staff:
-            # Les admins voient tout
             return Review.objects.all().select_related(
                 'property', 'reviewer', 'property__owner'
             ).prefetch_related('images', 'owner_reply')
         
         if user.is_owner:
-            # Les propriétaires voient leurs avis et les avis publics sur leurs logements
             return Review.objects.filter(
                 Q(reviewer=user) | Q(property__owner=user) | (Q(is_public=True) & ~Q(reviewer=user))
             ).select_related(
                 'property', 'reviewer', 'property__owner'
             ).prefetch_related('images', 'owner_reply')
         
-        # Les locataires voient leurs avis et les avis publics
+        # Locataires voient leurs avis et les avis publics
         return Review.objects.filter(
             Q(reviewer=user) | Q(is_public=True)
         ).select_related(
@@ -176,24 +175,32 @@ class ReviewReplyViewSet(viewsets.ModelViewSet):
     serializer_class = ReviewReplySerializer
     permission_classes = [permissions.IsAuthenticated]
     
+    def get_permissions(self):
+        """
+        Seuls les propriétaires peuvent répondre aux avis sur leurs logements.
+        """
+        return [IsOwnerRole()]
+    
     def get_queryset(self):
         """
-        Retourne le queryset approprié.
-        - Pour les administrateurs : toutes les réponses
-        - Pour les autres : uniquement les réponses visibles
+        Filtre les réponses selon le rôle utilisateur.
         """
         user = self.request.user
+        
+        if not user.is_authenticated:
+            return ReviewReply.objects.filter(
+                review__is_public=True
+            ).select_related('review', 'owner', 'review__property')
         
         if user.is_staff:
             return ReviewReply.objects.all().select_related('review', 'owner', 'review__property')
         
         if user.is_owner:
-            # Les propriétaires voient leurs réponses
             return ReviewReply.objects.filter(
                 Q(owner=user) | Q(review__property__owner=user)
             ).select_related('review', 'owner', 'review__property')
         
-        # Les locataires voient les réponses aux avis publics
+        # Locataires voient les réponses aux avis publics
         return ReviewReply.objects.filter(
             review__is_public=True
         ).select_related('review', 'owner', 'review__property')
@@ -240,18 +247,29 @@ class ReportedReviewViewSet(viewsets.ModelViewSet):
     serializer_class = ReportedReviewSerializer
     permission_classes = [permissions.IsAuthenticated]
     
+    def get_permissions(self):
+        """
+        Actions admin réservées aux administrateurs.
+        """
+        if self.action in ['admin_review', 'pending']:
+            permission_classes = [IsAdminUser]
+        else:
+            permission_classes = [permissions.IsAuthenticated]
+        
+        return [permission() for permission in permission_classes]
+    
     def get_queryset(self):
         """
-        Retourne le queryset approprié selon le contexte.
-        - Pour les administrateurs : tous les signalements
-        - Pour les autres : uniquement leurs signalements
+        Utilisateurs ne voient que leurs signalements.
         """
         user = self.request.user
+        
+        if not user.is_authenticated:
+            return ReportedReview.objects.none()
         
         if user.is_staff:
             return ReportedReview.objects.all().select_related('review', 'reporter', 'review__property')
         
-        # Pour les utilisateurs normaux, uniquement leurs signalements
         return ReportedReview.objects.filter(reporter=user).select_related('review', 'review__property')
     
     def perform_create(self, serializer):

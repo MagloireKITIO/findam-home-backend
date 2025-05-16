@@ -10,6 +10,7 @@ from django.db.models import Q
 from django.utils import timezone
 from django_filters.rest_framework import DjangoFilterBackend
 from .models import Booking, PromoCode, BookingReview, PaymentTransaction
+from common.permissions import IsOwnerRole, IsTenantRole
 from .serializers import (
     BookingCreateSerializer,
     BookingListSerializer,
@@ -90,12 +91,20 @@ class BookingViewSet(viewsets.ModelViewSet):
     
     def get_permissions(self):
         """
-        Définit les permissions selon l'action.
+        Permissions basées sur les rôles pour les réservations.
         """
-        if self.action in ['create']:
-            permission_classes = [permissions.IsAuthenticated]
-        elif self.action in ['update', 'partial_update', 'destroy', 'cancel']:
+        if self.action in ['create', 'initiate_payment', 'check_payment_status']:
+            permission_classes = [IsTenantRole]
+        elif self.action in ['confirm', 'complete', 'complete_booking_and_release_funds']:
+            permission_classes = [IsOwnerRole]
+        elif self.action in ['immediate_release']:
+            permission_classes = [permissions.IsAdminUser]
+        elif self.action in ['cancel']:
             permission_classes = [permissions.IsAuthenticated, IsBookingParticipant]
+        elif self.action in ['cancelled_with_compensation']:
+            permission_classes = [IsOwnerRole]
+        elif self.action in ['calendar_data', 'monthly_summary']:
+            permission_classes = [IsTenantRole]
         else:
             permission_classes = [permissions.IsAuthenticated]
         
@@ -1104,6 +1113,43 @@ class BookingViewSet(viewsets.ModelViewSet):
             'total_nights': total_nights,
             'bookings': BookingListSerializer(bookings, many=True, context={'request': request}).data
         })
+
+    def get_queryset(self):
+        """
+        Filtre les réservations selon le rôle utilisateur.
+        """
+        user = self.request.user
+        is_owner_request = (
+            self.request.path.startswith('/api/v1/bookings/') and 
+            (self.request.GET.get('is_owner') == 'true' or 'owner' in self.request.path)
+        )
+        
+        if user.is_staff:
+            return Booking.objects.all().select_related(
+                'property', 'tenant', 'property__city', 'property__neighborhood'
+            ).prefetch_related('property__images')
+        
+        # Protection : vérifier que c'est vraiment un propriétaire pour les requêtes owner
+        if is_owner_request:
+            if not user.is_owner:
+                return Booking.objects.none()
+            return Booking.objects.filter(property__owner=user).select_related(
+                'property', 'tenant', 'property__city', 'property__neighborhood'  
+            ).prefetch_related('property__images')
+        
+        # Protection : s'assurer que les locataires ne voient que leurs réservations
+        if user.is_tenant or (user.is_owner and not is_owner_request):
+            return Booking.objects.filter(tenant=user).select_related(
+                'property', 'property__city', 'property__neighborhood'
+            ).prefetch_related('property__images')
+        
+        # Cas par défaut pour les propriétaires accédant aux routes non-owner
+        if user.is_owner:
+            return Booking.objects.filter(tenant=user).select_related(
+                'property', 'property__city', 'property__neighborhood'
+            ).prefetch_related('property__images')
+        
+        return Booking.objects.none()
     
 class PromoCodeViewSet(viewsets.ModelViewSet):
     """
@@ -1120,14 +1166,25 @@ class PromoCodeViewSet(viewsets.ModelViewSet):
             return PromoCodeCreateSerializer
         return PromoCodeSerializer
     
+    def get_permissions(self):
+        """
+        Seuls les propriétaires peuvent créer des codes promo.
+        """
+        if self.action in ['create', 'update', 'partial_update', 'destroy']:
+            permission_classes = [IsOwnerRole, IsPromoCodeOwnerOrReadOnly]
+        else:
+            permission_classes = [permissions.IsAuthenticated]
+        
+        return [permission() for permission in permission_classes]
+    
     def get_queryset(self):
         """
-        Retourne le queryset approprié selon le contexte.
-        - Pour les propriétaires : uniquement leurs codes promo
-        - Pour les locataires : uniquement les codes promo qui leur sont destinés
-        - Pour les administrateurs : tous les codes promo
+        Filtre les codes promo selon le rôle.
         """
         user = self.request.user
+        
+        if not user.is_authenticated:
+            return PromoCode.objects.none()
         
         if user.is_staff:
             return PromoCode.objects.all().select_related('property', 'tenant', 'created_by')
@@ -1135,7 +1192,7 @@ class PromoCodeViewSet(viewsets.ModelViewSet):
         if user.is_owner:
             return PromoCode.objects.filter(property__owner=user).select_related('property', 'tenant', 'created_by')
         
-        # Par défaut, retourner les codes promo du locataire
+        # Locataires : seulement les codes qui leur sont destinés
         return PromoCode.objects.filter(tenant=user).select_related('property', 'tenant', 'created_by')
     
     def perform_create(self, serializer):
@@ -1202,22 +1259,31 @@ class BookingReviewViewSet(viewsets.ModelViewSet):
     serializer_class = BookingReviewSerializer
     permission_classes = [permissions.IsAuthenticated, CanLeaveReview]
     
+    def get_permissions(self):
+        """
+        Authentification requise pour tous, permissions spécifiques selon l'action.
+        """
+        return [permissions.IsAuthenticated, CanLeaveReview]
+    
     def get_queryset(self):
         """
-        Retourne le queryset approprié selon le contexte.
+        Filtre les avis selon le rôle utilisateur.
         """
         user = self.request.user
+        
+        if not user.is_authenticated:
+            return BookingReview.objects.none()
         
         if user.is_staff:
             return BookingReview.objects.all().select_related('booking__property', 'booking__tenant')
         
-        # Pour les propriétaires et locataires, retourner les avis liés à leurs réservations
+        # Propriétaires : avis sur leurs logements + leurs propres avis en tant que locataires
         if user.is_owner:
             return BookingReview.objects.filter(
                 Q(booking__property__owner=user) | Q(booking__tenant=user)
             ).select_related('booking__property', 'booking__tenant')
         
-        # Par défaut, retourner les avis liés aux réservations du locataire
+        # Locataires : uniquement leurs avis
         return BookingReview.objects.filter(
             booking__tenant=user
         ).select_related('booking__property', 'booking__tenant')

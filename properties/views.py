@@ -34,6 +34,7 @@ from .middleware import SubscriptionLimitValidator
 from .permissions import IsOwnerOrReadOnly, IsOwnerOfProperty, IsVerifiedOwner
 from .filters import PropertyFilter
 from decimal import Decimal
+from common.permissions import IsOwnerRole, IsTenantRole
 
 
 class AmenityViewSet(viewsets.ReadOnlyModelViewSet):
@@ -147,16 +148,25 @@ class PropertyViewSet(viewsets.ModelViewSet):
     
     def get_permissions(self):
         """
-        Définit les permissions selon l'action.
+        Définit les permissions selon l'action et le rôle.
         """
         if self.action in ['create']:
-            permission_classes = [permissions.IsAuthenticated, IsVerifiedOwner]
+            # Création réservée aux propriétaires vérifiés
+            permission_classes = [IsOwnerRole, IsVerifiedOwner]
         elif self.action in ['update', 'partial_update', 'destroy']:
-            permission_classes = [permissions.IsAuthenticated, IsOwnerOfProperty]
+            # Modification/suppression par le propriétaire du logement
+            permission_classes = [IsOwnerRole, IsOwnerOfProperty]
+        elif self.action in ['publish', 'unpublish']:
+            # Gestion de publication par le propriétaire
+            permission_classes = [IsOwnerRole, IsOwnerOfProperty]
+        elif self.action in ['verify']:
+            # Vérification uniquement par les admins
+            permission_classes = [permissions.IsAdminUser]
         elif self.action in ['my_properties']:
-            permission_classes = [permissions.IsAuthenticated]
+            # Mes logements pour les propriétaires
+            permission_classes = [IsOwnerRole]
         else:
-            # IMPORTANT: Actions list et retrieve sont publiques
+            # Actions de lecture publiques
             permission_classes = [permissions.AllowAny]
         
         return [permission() for permission in permission_classes]
@@ -421,6 +431,23 @@ class PropertyImageViewSet(viewsets.ModelViewSet):
         image.save()
         
         return Response({"detail": "Image définie comme principale avec succès."})
+    
+    def get_permissions(self):
+        """
+        Seuls les propriétaires peuvent gérer les images de leurs logements.
+        """
+        return [IsOwnerRole(), IsOwnerOfProperty()]
+    
+    def get_queryset(self):
+        """
+        Propriétaires ne voient que les images de leurs logements.
+        """
+        if not self.request.user.is_authenticated or not self.request.user.is_owner:
+            return PropertyImage.objects.none()
+        
+        return PropertyImage.objects.filter(
+            property__owner=self.request.user
+        ).select_related('property')
 
 class AvailabilityViewSet(viewsets.ModelViewSet):
     """
@@ -490,3 +517,29 @@ class AvailabilityViewSet(viewsets.ModelViewSet):
         
         serializer = AvailabilitySerializer(unavailabilities, many=True)
         return Response(serializer.data)
+    def get_permissions(self):
+        """
+        Seuls les propriétaires peuvent gérer les disponibilités.
+        """
+        if self.action in ['by_property'] and self.request.method == 'GET':
+            return [permissions.AllowAny()]
+        return [IsOwnerRole(), IsOwnerOfProperty()]
+    
+    def get_queryset(self):
+        """
+        Filtre selon le rôle de l'utilisateur.
+        """
+        user = self.request.user
+        
+        if not user.is_authenticated:
+            return Availability.objects.none()
+        
+        if user.is_staff:
+            return Availability.objects.all().select_related('property')
+        
+        if user.is_owner:
+            return Availability.objects.filter(
+                property__owner=user
+            ).select_related('property')
+        
+        return Availability.objects.none()

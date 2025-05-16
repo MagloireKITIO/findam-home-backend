@@ -10,6 +10,8 @@ from django_filters.rest_framework import DjangoFilterBackend
 from accounts.permissions import IsOwnerOfProfile, IsAdminUser
 from bookings.models import Booking
 from .models import PaymentMethod, Transaction, Payout, Commission
+from common.permissions import IsOwnerRole
+
 from .serializers import (
     PaymentMethodSerializer,
     TransactionSerializer,
@@ -32,18 +34,29 @@ class PaymentMethodViewSet(viewsets.ModelViewSet):
     ordering_fields = ['created_at', 'is_active', 'status']
     ordering = ['-is_active', '-created_at']
     
+    def get_permissions(self):
+        """
+        Authentification requise, certaines actions réservées aux admins.
+        """
+        if self.action in ['bulk_verify']:
+            permission_classes = [IsAdminUser]
+        else:
+            permission_classes = [permissions.IsAuthenticated]
+        
+        return [permission() for permission in permission_classes]
+    
     def get_queryset(self):
         """
-        Retourne le queryset approprié selon le contexte.
-        - Pour les administrateurs : toutes les méthodes de paiement
-        - Pour les autres : uniquement leurs méthodes de paiement
+        Utilisateurs ne voient que leurs méthodes de paiement.
         """
         user = self.request.user
+        
+        if not user.is_authenticated:
+            return PaymentMethod.objects.none()
         
         if user.is_staff:
             return PaymentMethod.objects.all()
         
-        # Pour les utilisateurs normaux, uniquement leurs méthodes de paiement
         return PaymentMethod.objects.filter(user=user)
     
     def get_serializer_class(self):
@@ -364,11 +377,12 @@ class TransactionViewSet(viewsets.ReadOnlyModelViewSet):
     
     def get_queryset(self):
         """
-        Retourne le queryset approprié selon le contexte.
-        - Pour les administrateurs : toutes les transactions
-        - Pour les autres : uniquement leurs transactions
+        Utilisateurs ne voient que leurs transactions.
         """
         user = self.request.user
+        
+        if not user.is_authenticated:
+            return Transaction.objects.none()
         
         if user.is_staff:
             return Transaction.objects.all().select_related(
@@ -376,7 +390,6 @@ class TransactionViewSet(viewsets.ReadOnlyModelViewSet):
                 'payment_transaction'
             )
         
-        # Pour les utilisateurs normaux, uniquement leurs transactions
         return Transaction.objects.filter(user=user).select_related(
             'booking', 'booking__property', 'booking__tenant',
             'payment_transaction'
@@ -463,20 +476,34 @@ class PayoutViewSet(viewsets.ModelViewSet):
     ordering_fields = ['created_at', 'processed_at', 'amount']
     ordering = ['-created_at']
     
+    def get_permissions(self):
+        """
+        Propriétaires pour leurs versements, admins pour les actions de gestion.
+        """
+        if self.action in ['confirm', 'mark_completed', 'mark_failed', 'pending', 'schedule', 'cancel_schedule', 'mark_ready', 'scheduled', 'ready', 'process_scheduled', 'process_ready', 'schedule_for_booking']:
+            permission_classes = [permissions.IsAdminUser]
+        else:
+            permission_classes = [permissions.IsAuthenticated]
+        
+        return [permission() for permission in permission_classes]
+    
     def get_queryset(self):
         """
-        Retourne le queryset approprié selon le contexte.
-        - Pour les administrateurs : tous les versements
-        - Pour les autres : uniquement leurs versements
+        Propriétaires ne voient que leurs versements.
         """
         user = self.request.user
+        
+        if not user.is_authenticated:
+            return Payout.objects.none()
         
         if user.is_staff:
             return Payout.objects.all().select_related(
                 'owner', 'payment_method', 'transaction'
             ).prefetch_related('bookings')
         
-        # Pour les utilisateurs normaux, uniquement leurs versements
+        if not user.is_owner:
+            return Payout.objects.none()
+        
         return Payout.objects.filter(owner=user).select_related(
             'payment_method', 'transaction'
         ).prefetch_related('bookings')
@@ -950,31 +977,39 @@ class CommissionViewSet(viewsets.ReadOnlyModelViewSet):
     ordering_fields = ['created_at', 'total_amount']
     ordering = ['-created_at']
     
+    def get_permissions(self):
+        """
+        Admins pour le résumé, authentification pour le reste.
+        """
+        if self.action in ['summary']:
+            permission_classes = [IsAdminUser]
+        else:
+            permission_classes = [permissions.IsAuthenticated]
+        
+        return [permission() for permission in permission_classes]
+    
     def get_queryset(self):
         """
-        Retourne le queryset approprié selon le contexte.
-        - Pour les administrateurs : toutes les commissions
-        - Pour les propriétaires : les commissions sur leurs réservations
-        - Pour les locataires : les commissions sur leurs réservations
+        Filtre les commissions selon le rôle utilisateur.
         """
         user = self.request.user
         
+        if not user.is_authenticated:
+            return Commission.objects.none()
+        
         if user.is_staff:
             return Commission.objects.all().select_related(
-                'booking', 'booking__property', 'booking__tenant',
-                'transaction'
+                'booking', 'booking__property', 'booking__tenant', 'transaction'
             )
         
         if user.is_owner:
-            # Pour les propriétaires, uniquement les commissions sur leurs logements
             return Commission.objects.filter(
                 booking__property__owner=user
             ).select_related(
-                'booking', 'booking__property', 'booking__tenant',
-                'transaction'
+                'booking', 'booking__property', 'booking__tenant', 'transaction'
             )
         
-        # Pour les locataires, uniquement les commissions sur leurs réservations
+        # Locataires : commissions sur leurs réservations
         return Commission.objects.filter(
             booking__tenant=user
         ).select_related(

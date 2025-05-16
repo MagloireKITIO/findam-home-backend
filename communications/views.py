@@ -30,20 +30,26 @@ class ConversationViewSet(viewsets.ModelViewSet):
     ordering_fields = ['updated_at', 'created_at']
     ordering = ['-updated_at']
     
+    def get_permissions(self):
+        """
+        Authentification requise pour toutes les actions.
+        """
+        return [permissions.IsAuthenticated()]
+    
     def get_queryset(self):
         """
-        Retourne le queryset approprié selon le contexte.
-        - Pour les administrateurs : toutes les conversations
-        - Pour les autres : uniquement leurs conversations
+        Utilisateurs ne voient que leurs conversations.
         """
         user = self.request.user
+        
+        if not user.is_authenticated:
+            return Conversation.objects.none()
         
         if user.is_staff:
             return Conversation.objects.all().prefetch_related(
                 'participants', 'messages'
             ).select_related('property')
         
-        # Pour les utilisateurs normaux, uniquement leurs conversations
         return Conversation.objects.filter(
             participants=user
         ).prefetch_related(
@@ -166,23 +172,19 @@ class MessageViewSet(viewsets.ModelViewSet):
     
     def get_queryset(self):
         """
-        Retourne le queryset approprié selon le contexte.
-        - Pour les administrateurs : tous les messages
-        - Pour les autres : uniquement les messages de leurs conversations
+        Utilisateurs ne voient que les messages de leurs conversations.
         """
         user = self.request.user
         
-        if user.is_staff:
-            return Message.objects.all().select_related(
-                'conversation', 'sender'
-            )
+        if not user.is_authenticated:
+            return Message.objects.none()
         
-        # Pour les utilisateurs normaux, uniquement les messages de leurs conversations
+        if user.is_staff:
+            return Message.objects.all().select_related('conversation', 'sender')
+        
         return Message.objects.filter(
             conversation__participants=user
-        ).select_related(
-            'conversation', 'sender'
-        )
+        ).select_related('conversation', 'sender')
     
     def perform_create(self, serializer):
         """
@@ -263,16 +265,16 @@ class NotificationViewSet(viewsets.ModelViewSet):
     
     def get_queryset(self):
         """
-        Retourne le queryset approprié selon le contexte.
-        - Pour les administrateurs : toutes les notifications
-        - Pour les autres : uniquement leurs notifications
+        Utilisateurs ne voient que leurs notifications.
         """
         user = self.request.user
+        
+        if not user.is_authenticated:
+            return Notification.objects.none()
         
         if user.is_staff:
             return Notification.objects.all()
         
-        # Pour les utilisateurs normaux, uniquement leurs notifications
         return Notification.objects.filter(recipient=user)
     
     @action(detail=True, methods=['post'])
@@ -321,16 +323,16 @@ class DeviceTokenViewSet(viewsets.ModelViewSet):
     
     def get_queryset(self):
         """
-        Retourne le queryset approprié selon le contexte.
-        - Pour les administrateurs : tous les tokens
-        - Pour les autres : uniquement leurs tokens
+        Utilisateurs ne voient que leurs tokens.
         """
         user = self.request.user
+        
+        if not user.is_authenticated:
+            return DeviceToken.objects.none()
         
         if user.is_staff:
             return DeviceToken.objects.all()
         
-        # Pour les utilisateurs normaux, uniquement leurs tokens
         return DeviceToken.objects.filter(user=user)
     
     def perform_create(self, serializer):
