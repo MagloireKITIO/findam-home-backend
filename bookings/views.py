@@ -53,20 +53,34 @@ class BookingViewSet(viewsets.ModelViewSet):
     def get_queryset(self):
         """
         Retourne le queryset approprié selon le contexte.
-        - Pour les propriétaires : uniquement leurs logements
+        - Pour les propriétaires : uniquement les réservations de leurs logements
         - Pour les locataires : uniquement leurs réservations
         - Pour les administrateurs : toutes les réservations
         """
         user = self.request.user
+        
+        # Vérifier si c'est une requête pour l'espace propriétaire
+        is_owner_request = self.request.path.startswith('/api/v1/bookings/') and (
+            self.request.GET.get('is_owner') == 'true' or 
+            'owner' in self.request.path
+        )
         
         if user.is_staff:
             return Booking.objects.all().select_related(
                 'property', 'tenant', 'property__city', 'property__neighborhood'
             ).prefetch_related('property__images')
         
-        if user.is_owner:
+        # Si l'utilisateur est un propriétaire ET que c'est une requête pour l'espace propriétaire
+        if user.user_type == 'owner' and is_owner_request:
             return Booking.objects.filter(property__owner=user).select_related(
-                'property', 'tenant', 'property__city', 'property__neighborhood'
+                'property', 'tenant', 'property__city', 'property__neighborhood'  
+            ).prefetch_related('property__images')
+        
+        # Si l'utilisateur est un propriétaire mais accède aux routes de locataire
+        # On retourne ses propres réservations en tant que locataire
+        if user.user_type == 'owner' and not is_owner_request:
+            return Booking.objects.filter(tenant=user).select_related(
+                'property', 'property__city', 'property__neighborhood'
             ).prefetch_related('property__images')
         
         # Par défaut, retourner les réservations du locataire
