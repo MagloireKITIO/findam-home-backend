@@ -301,7 +301,7 @@ class PropertyViewSet(viewsets.ModelViewSet):
         
         action = "vérifié" if property_obj.is_verified else "non vérifié"
         return Response({"detail": f"Le logement est maintenant {action}."})
-    
+   
     @action(detail=True, methods=['get'])
     def check_availability(self, request, pk=None):
         """
@@ -323,7 +323,18 @@ class PropertyViewSet(viewsets.ModelViewSet):
             Q(start_date__lte=end_date) & Q(end_date__gte=start_date)
         )
         
-        is_available = not unavailabilities.exists()
+        # Ajouter les réservations externes comme indisponibilités
+        from bookings.models import Booking
+        external_bookings = Booking.objects.filter(
+            property=property_obj,
+            is_external=True,
+            status__in=['confirmed', 'completed'],
+            check_in_date__lte=end_date,
+            check_out_date__gte=start_date
+        )
+        
+        # Combiner unavailabilities et external bookings
+        is_available = not (unavailabilities.exists() or external_bookings.exists())
         
         # Calculer le prix total pour la période
         days = (end_date - start_date).days
@@ -334,14 +345,30 @@ class PropertyViewSet(viewsets.ModelViewSet):
             total_price += property_obj.cleaning_fee
         
         # Calculer les frais de service (7%)
-        # CORRECTION: Utiliser Decimal au lieu de float pour éviter l'erreur de type
         service_fee = total_price * Decimal('0.07')
         
-        # Récupérer toutes les indisponibilités futures (pas seulement pour la période demandée)
+        # Récupérer toutes les indisponibilités futures
         today = timezone.now().date()
         all_unavailabilities = property_obj.unavailabilities.filter(
             end_date__gte=today
         ).values('start_date', 'end_date', 'booking_type')
+        
+        # Récupérer toutes les réservations externes futures
+        all_external_bookings = Booking.objects.filter(
+            property=property_obj,
+            is_external=True,
+            status__in=['confirmed', 'completed'],
+            check_out_date__gte=today
+        ).values('check_in_date', 'check_out_date')
+        
+        # Combiner toutes les indisponibilités
+        all_unavailable = list(all_unavailabilities)
+        for booking in all_external_bookings:
+            all_unavailable.append({
+                'start_date': booking['check_in_date'],
+                'end_date': booking['check_out_date'],
+                'booking_type': 'external'
+            })
         
         return Response({
             "available": is_available,
@@ -354,8 +381,10 @@ class PropertyViewSet(viewsets.ModelViewSet):
             "security_deposit": property_obj.security_deposit,
             "service_fee": service_fee,
             "total_price": total_price + property_obj.security_deposit + service_fee,
-            "unavailable_dates": list(unavailabilities.values('start_date', 'end_date', 'booking_type')),
-            "all_unavailable_dates": list(all_unavailabilities)
+            "unavailable_dates": list(unavailabilities.values('start_date', 'end_date', 'booking_type')) + 
+                                [{'start_date': b.check_in_date, 'end_date': b.check_out_date, 'booking_type': 'external'} 
+                                for b in external_bookings],
+            "all_unavailable_dates": all_unavailable
         })
         
     @action(detail=True, methods=['post'])

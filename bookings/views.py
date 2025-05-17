@@ -3,7 +3,7 @@
 
 from rest_framework import viewsets, permissions, status, filters
 from django.utils.translation import gettext as _
-
+from datetime import datetime
 from rest_framework.decorators import action
 from rest_framework.response import Response
 from django.db.models import Q
@@ -225,6 +225,113 @@ class BookingViewSet(viewsets.ModelViewSet):
         return Response({
             "detail": _("Réservation marquée comme terminée avec succès.")
         })
+    
+    @action(detail=False, methods=['post'])
+    def create_external_booking(self, request):
+        """
+        Crée une réservation externe pour un propriétaire.
+        POST /api/v1/bookings/bookings/create_external_booking/
+        """
+        # Vérifier que l'utilisateur est propriétaire
+        if not request.user.is_owner:
+            return Response({
+                "detail": _("Seuls les propriétaires peuvent créer des réservations externes.")
+            }, status=status.HTTP_403_FORBIDDEN)
+        
+        # Récupérer les données
+        property_id = request.data.get('property_id')
+        check_in_date = request.data.get('check_in_date')
+        check_out_date = request.data.get('check_out_date')
+        external_client_name = request.data.get('external_client_name')
+        external_client_phone = request.data.get('external_client_phone', '')
+        external_notes = request.data.get('external_notes', '')
+        guests_count = request.data.get('guests_count', 1)
+        
+        # Validation des champs requis
+        if not all([property_id, check_in_date, check_out_date, external_client_name]):
+            return Response({
+                "detail": _("Logement, dates et nom du client sont requis.")
+            }, status=status.HTTP_400_BAD_REQUEST)
+        
+        try:
+            # Vérifier que la propriété appartient au propriétaire
+            from properties.models import Property
+            property_obj = Property.objects.get(id=property_id, owner=request.user)
+            
+            # Convertir les dates
+            from datetime import datetime
+            check_in_date = datetime.strptime(check_in_date, '%Y-%m-%d').date()
+            check_out_date = datetime.strptime(check_out_date, '%Y-%m-%d').date()
+            
+            # Validation des dates
+            if check_out_date <= check_in_date:
+                return Response({
+                    "detail": _("La date de départ doit être postérieure à la date d'arrivée.")
+                }, status=status.HTTP_400_BAD_REQUEST)
+            
+            if check_in_date < timezone.now().date():
+                return Response({
+                    "detail": _("La date d'arrivée doit être future.")
+                }, status=status.HTTP_400_BAD_REQUEST)
+            
+            # Vérifier la disponibilité
+            overlapping_bookings = Booking.objects.filter(
+                property=property_obj,
+                status__in=['pending', 'confirmed', 'completed'],
+                check_in_date__lt=check_out_date,
+                check_out_date__gt=check_in_date
+            ).exists()
+            
+            if overlapping_bookings:
+                return Response({
+                    "detail": _("Le logement n'est pas disponible pour ces dates.")
+                }, status=status.HTTP_400_BAD_REQUEST)
+            
+            # Créer la réservation externe
+            # CORRECTION: Ne pas mettre le propriétaire comme tenant
+            booking = Booking(
+                property=property_obj,
+                # Laisser tenant à None pour les réservations externes
+                tenant=None,
+                check_in_date=check_in_date,
+                check_out_date=check_out_date,
+                guests_count=guests_count,
+                is_external=True,
+                external_client_name=external_client_name,
+                external_client_phone=external_client_phone,
+                external_notes=external_notes,
+                status='confirmed',  # Les réservations externes sont automatiquement confirmées
+                payment_status='paid',  # Marquer comme payé mais sans montant
+                # Forcer les montants à zéro
+                base_price=0,
+                cleaning_fee=0,
+                security_deposit=0,
+                service_fee=0,
+                discount_amount=0,
+                total_price=0
+            )
+            
+            # Sauvegarder sans calculer les prix
+            booking.save()
+            
+            return Response({
+                "detail": _("Réservation externe créée avec succès."),
+                "booking_id": str(booking.id)
+            }, status=status.HTTP_201_CREATED)
+            
+        except Property.DoesNotExist:
+            return Response({
+                "detail": _("Logement non trouvé ou non autorisé.")
+            }, status=status.HTTP_404_NOT_FOUND)
+        except ValueError as e:
+            return Response({
+                "detail": _("Format de date invalide. Utilisez YYYY-MM-DD.")
+            }, status=status.HTTP_400_BAD_REQUEST)
+        except Exception as e:
+            logger.exception(f"Erreur lors de la création de la réservation externe: {str(e)}")
+            return Response({
+                "detail": _("Une erreur est survenue lors de la création de la réservation externe.")
+            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
     
     @action(detail=True, methods=['post'])
     def initiate_payment(self, request, pk=None):

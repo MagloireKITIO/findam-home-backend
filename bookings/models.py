@@ -83,7 +83,7 @@ class Booking(models.Model):
     
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     property = models.ForeignKey(Property, on_delete=models.PROTECT, related_name='bookings')
-    tenant = models.ForeignKey(User, on_delete=models.PROTECT, related_name='bookings')
+    tenant = models.ForeignKey(User, on_delete=models.PROTECT, related_name='bookings', null=True, blank=True)
     
     # Dates et nombre de personnes
     check_in_date = models.DateField(_('date d\'arrivée'))
@@ -112,6 +112,12 @@ class Booking(models.Model):
     updated_at = models.DateTimeField(_('date de mise à jour'), auto_now=True)
     cancelled_at = models.DateTimeField(_('date d\'annulation'), null=True, blank=True)
     cancelled_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True, related_name='cancelled_bookings')
+
+    # réservations externes
+    is_external = models.BooleanField(_('réservation externe'), default=False)
+    external_client_name = models.CharField(_('nom du client externe'), max_length=200, blank=True)
+    external_client_phone = models.CharField(_('téléphone du client externe'), max_length=20, blank=True)
+    external_notes = models.TextField(_('notes sur la réservation externe'), blank=True)
     
     class Meta:
         verbose_name = _('réservation')
@@ -129,7 +135,9 @@ class Booking(models.Model):
             self._previous_status = None
         
     def __str__(self):
-        return f"Réservation de {self.property.title} par {self.tenant.email} du {self.check_in_date} au {self.check_out_date}"
+        if self.is_external:
+            return f"Réservation externe - {self.external_client_name} - {self.property.title} du {self.check_in_date} au {self.check_out_date}"
+        return f"Réservation de {self.property.title} par {self.tenant.email if self.tenant else 'Unknown'} du {self.check_in_date} au {self.check_out_date}"
     
     def save(self, *args, **kwargs):
         """Surcharge de la méthode save pour des comportements personnalisés."""
@@ -146,8 +154,17 @@ class Booking(models.Model):
             except Booking.DoesNotExist:
                 pass
         
-        # Calculer le prix total si ce n'est pas déjà fait
-        if not self.total_price:
+        # CORRECTION: Pour les réservations externes, ne pas calculer les prix
+        if self.is_external:
+            # Forcer les valeurs à zéro pour les réservations externes
+            self.base_price = 0
+            self.cleaning_fee = 0
+            self.security_deposit = 0
+            self.service_fee = 0
+            self.discount_amount = 0
+            self.total_price = 0
+        elif not self.total_price:
+            # Calculer le prix total seulement si ce n'est pas déjà fait ET si ce n'est pas externe
             self.calculate_total_price()
         
         # Sauvegarder d'abord
@@ -158,9 +175,14 @@ class Booking(models.Model):
         
         if status_changed:
             self.handle_availability_changes(is_new, old_status)
+            
     
     def calculate_total_price(self):
         """Calcule le prix total de la réservation."""
+        # AJOUT: Ne rien faire pour les réservations externes
+        if self.is_external:
+            return 0
+        
         # Prix de base
         days = (self.check_out_date - self.check_in_date).days
         self.base_price = self.property.calculate_price_for_days(days)
@@ -282,8 +304,9 @@ class BookingReview(models.Model):
         
         # Mettre à jour la note moyenne du locataire ou du propriétaire
         if self.is_from_owner:
-            # Le propriétaire évalue le locataire
-            self.booking.tenant.profile.update_rating(self.rating)
+            # Le propriétaire évalue le locataire, vérifier que le tenant existe
+            if self.booking.tenant:  # Ajouter cette vérification
+                self.booking.tenant.profile.update_rating(self.rating)
         else:
             # Le locataire évalue le propriétaire
             self.booking.property.owner.profile.update_rating(self.rating)

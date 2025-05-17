@@ -126,8 +126,10 @@ class BookingAdmin(admin.ModelAdmin):
         return obj.property.title
     
     def tenant_name(self, obj):
-        """Affiche le nom du locataire."""
-        return obj.tenant.get_full_name() or obj.tenant.email
+        """Affiche le nom du locataire ou du client externe."""
+        if obj.is_external:
+            return f"{obj.external_client_name} (Externe)"
+        return obj.tenant.get_full_name() if obj.tenant else "Sans locataire"
     
     def escrow_status(self, obj):
         """Affiche le statut de séquestre pour cette réservation."""
@@ -417,6 +419,15 @@ class BookingReviewAdmin(admin.ModelAdmin):
     def booking_ref(self, obj):
         """Affiche la référence de la réservation."""
         return f"{obj.booking.property.title} - {obj.booking.id}"
+    
+    def reviewer_name(self, obj):
+        """Affiche le nom du reviewer."""
+        if obj.is_from_owner:
+            return f"{obj.booking.property.owner.get_full_name()} (Propriétaire)"
+        # Vérifier que tenant existe
+        if obj.booking.tenant:
+            return f"{obj.booking.tenant.get_full_name()} (Locataire)"
+        return "Client externe"
     
     def reviewer_type(self, obj):
         """Affiche le type de l'utilisateur qui a laissé l'avis."""

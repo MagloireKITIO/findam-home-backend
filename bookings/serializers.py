@@ -128,16 +128,25 @@ class BookingReviewSerializer(serializers.ModelSerializer):
         """Récupère le nom de l'utilisateur qui a laissé l'avis."""
         if obj.is_from_owner:
             return obj.booking.property.owner.get_full_name()
-        return obj.booking.tenant.get_full_name()
+        # MODIFICATION: Gérer le cas où tenant peut être null
+        return obj.booking.tenant.get_full_name() if obj.booking.tenant else 'Client externe'
     
     def validate(self, data):
         """Validation personnalisée."""
         booking = data.get('booking')
         user = self.context.get('request').user
         
+        # MODIFICATION: Empêcher les avis sur les réservations externes
+        if booking.is_external:
+            raise serializers.ValidationError(_("Les avis ne sont pas autorisés pour les réservations externes."))
+        
         # Vérifier que la réservation est terminée
         if booking.status != 'completed':
             raise serializers.ValidationError(_("Vous ne pouvez laisser un avis que pour une réservation terminée."))
+        
+        # MODIFICATION: Gérer le cas où tenant peut être null
+        if not booking.tenant:
+            raise serializers.ValidationError(_("Cette réservation n'a pas de locataire associé."))
         
         # Vérifier que l'utilisateur est soit le propriétaire, soit le locataire
         if user != booking.tenant and user != booking.property.owner:
@@ -269,17 +278,6 @@ class BookingCreateSerializer(serializers.ModelSerializer):
         # IMPORTANT : Retourner la réservation créée avec son ID
         return booking
 
-    class Meta:
-        model = Booking
-        fields = [
-            'id',  # Assurez-vous que l'ID est inclus ici
-            'property', 
-            'check_in_date', 
-            'check_out_date', 
-            'guests_count', 
-            'special_requests', 
-            'promo_code_value'
-        ]
 
 class BookingListSerializer(serializers.ModelSerializer):
     """Sérialiseur pour la liste des réservations (version allégée)."""
@@ -289,7 +287,10 @@ class BookingListSerializer(serializers.ModelSerializer):
     city = serializers.CharField(source='property.city.name', read_only=True)
     neighborhood = serializers.CharField(source='property.neighborhood.name', read_only=True)
     owner_name = serializers.CharField(source='property.owner.get_full_name', read_only=True)
-    tenant_name = serializers.CharField(source='tenant.get_full_name', read_only=True)
+    
+    # MODIFICATION: Gérer le cas où tenant peut être null
+    tenant_name = serializers.SerializerMethodField()
+    tenant_details = serializers.SerializerMethodField()
     
     class Meta:
         model = Booking
@@ -297,8 +298,29 @@ class BookingListSerializer(serializers.ModelSerializer):
             'id', 'property_title', 'property_image', 'city', 'neighborhood',
             'check_in_date', 'check_out_date', 'guests_count',
             'total_price', 'status', 'payment_status',
-            'owner_name', 'tenant_name', 'created_at'
+            'owner_name', 'tenant_name', 'tenant_details', 'created_at',
+            'is_external', 'external_client_name'
         ]
+    
+    def get_tenant_name(self, obj):
+        """Retourne le nom du client (externe ou tenant)."""
+        if obj.is_external:
+            return obj.external_client_name
+        return obj.tenant.get_full_name() if obj.tenant else ''
+    
+    def get_tenant_details(self, obj):
+        """Retourne les détails du client."""
+        if obj.is_external:
+            return {
+                'email': '',  # Pas d'email pour les clients externes
+                'phone_number': obj.external_client_phone,
+                'is_external': True
+            }
+        return {
+            'email': obj.tenant.email if obj.tenant else '',
+            'phone_number': obj.tenant.phone_number if obj.tenant else '',
+            'is_external': False
+        } if obj.tenant else None
     
     def get_property_image(self, obj):
         """Récupère l'image principale du logement si elle existe."""
@@ -313,9 +335,11 @@ class BookingDetailSerializer(serializers.ModelSerializer):
     """Sérialiseur pour les détails d'une réservation."""
     
     property = PropertyListSerializer(read_only=True)
-    tenant = UserSerializer(read_only=True)
+    # MODIFICATION: Gérer le tenant avec une méthode personnalisée
+    tenant = serializers.SerializerMethodField()
     review = BookingReviewSerializer(read_only=True)
     promo_code_details = serializers.SerializerMethodField()
+    external_details = serializers.SerializerMethodField()
     
     class Meta:
         model = Booking
@@ -326,15 +350,94 @@ class BookingDetailSerializer(serializers.ModelSerializer):
             'discount_amount', 'service_fee', 'total_price',
             'promo_code_details', 'status', 'payment_status',
             'special_requests', 'notes', 'review',
-            'created_at', 'updated_at', 'cancelled_at'
+            'created_at', 'updated_at', 'cancelled_at',
+            'is_external', 'external_details'
         ]
+    
+    def get_tenant(self, obj):
+        """Retourne les données du tenant ou du client externe."""
+        if obj.is_external:
+            return {
+                'id': None,
+                'email': '',
+                'first_name': obj.external_client_name.split(' ')[0] if obj.external_client_name else '',
+                'last_name': ' '.join(obj.external_client_name.split(' ')[1:]) if obj.external_client_name and len(obj.external_client_name.split(' ')) > 1 else '',
+                'phone_number': obj.external_client_phone,
+                'is_external': True
+            }
+        elif obj.tenant:
+            return UserSerializer(obj.tenant).data
+        return None
+    
+    def get_external_details(self, obj):
+        """Retourne les détails de la réservation externe."""
+        if obj.is_external:
+            return {
+                'client_name': obj.external_client_name,
+                'client_phone': obj.external_client_phone,
+                'notes': obj.external_notes
+            }
+        return None
     
     def get_promo_code_details(self, obj):
         """Récupère les détails du code promo s'il existe."""
-        if obj.promo_code:
+        # MODIFICATION: Ne pas afficher les détails promo pour les réservations externes
+        if obj.promo_code and not obj.is_external:
             return {
                 'code': obj.promo_code.code,
                 'discount_percentage': obj.promo_code.discount_percentage,
                 'amount': obj.discount_amount
             }
         return None
+
+class ExternalBookingCreateSerializer(serializers.Serializer):
+    """Sérialiseur pour créer des réservations externes."""
+    
+    property_id = serializers.UUIDField()
+    check_in_date = serializers.DateField()
+    check_out_date = serializers.DateField()
+    external_client_name = serializers.CharField(max_length=200)
+    external_client_phone = serializers.CharField(max_length=20, required=False, allow_blank=True)
+    external_notes = serializers.CharField(required=False, allow_blank=True)
+    guests_count = serializers.IntegerField(default=1, min_value=1)
+    
+    def validate(self, data):
+        """Validation personnalisée pour les réservations externes."""
+        check_in_date = data.get('check_in_date')
+        check_out_date = data.get('check_out_date')
+        
+        # Vérifier que la date de départ est postérieure à la date d'arrivée
+        if check_out_date <= check_in_date:
+            raise serializers.ValidationError(_("La date de départ doit être postérieure à la date d'arrivée."))
+        
+        # Vérifier que la date d'arrivée est future
+        if check_in_date < timezone.now().date():
+            raise serializers.ValidationError(_("La date d'arrivée doit être future."))
+        
+        return data
+    
+    def create(self, validated_data):
+        """Création d'une réservation externe."""
+        from datetime import datetime
+        
+        # Récupérer la propriété
+        property_id = validated_data.pop('property_id')
+        property_obj = Property.objects.get(id=property_id)
+        
+        # Créer la réservation externe
+        booking = Booking.objects.create(
+            property=property_obj,
+            tenant=None,  # Pas de tenant pour les réservations externes
+            check_in_date=validated_data['check_in_date'],
+            check_out_date=validated_data['check_out_date'],
+            guests_count=validated_data.get('guests_count', 1),
+            is_external=True,
+            external_client_name=validated_data['external_client_name'],
+            external_client_phone=validated_data.get('external_client_phone', ''),
+            external_notes=validated_data.get('external_notes', ''),
+            status='confirmed',  # Les réservations externes sont automatiquement confirmées
+            payment_status='paid',  # Marquer comme payé mais sans montant
+            # Les prix seront automatiquement mis à 0 par la méthode save
+        )
+        
+        return booking

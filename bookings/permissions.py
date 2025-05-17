@@ -5,17 +5,19 @@ from rest_framework import permissions
 
 class IsBookingParticipant(permissions.BasePermission):
     """
-    Permission qui autorise uniquement le locataire ou le propriétaire du logement 
-    à accéder à une réservation.
+    Permission pour vérifier que l'utilisateur participe à la réservation.
     """
-    
     def has_object_permission(self, request, view, obj):
-        # Les administrateurs ont tous les droits
-        if request.user.is_staff:
-            return True
+        # Pour les réservations externes, seul le propriétaire peut y accéder
+        if obj.is_external:
+            return request.user == obj.property.owner
         
-        # L'utilisateur doit être soit le locataire, soit le propriétaire du logement
-        return (obj.tenant == request.user) or (obj.property.owner == request.user)
+        # Pour les réservations normales
+        return (
+            request.user == obj.tenant or 
+            request.user == obj.property.owner or
+            request.user.is_staff
+        )
 
 class IsPromoCodeOwnerOrReadOnly(permissions.BasePermission):
     """
